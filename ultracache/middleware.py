@@ -9,8 +9,7 @@ def _cleanup():
 
 
 class UltraCacheMiddleware(object):
-    """Middleware to ensure thread locals is cleaned up.
-    """
+    """Middleware to ensure thread locals is cleaned up."""
 
     def __init__(self, get_response=None):
         self.get_response = get_response

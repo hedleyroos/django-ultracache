@@ -1,6 +1,10 @@
 Changelog
 =========
 
+next
+----
+#. Django 4.1 compatibility.
+
 2.2
 ---
 #. Django 4.0 compatibility.

@@ -20,7 +20,7 @@ INSTALLED_APPS = (
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
-    "rest_framework"
+    "rest_framework",
 )
 
 CACHES = {
@@ -41,7 +41,7 @@ TEMPLATES = [
             "loaders": [
                 "django.template.loaders.filesystem.Loader",
                 "django.template.loaders.app_directories.Loader",
-            ]
+            ],
         },
     },
 ]

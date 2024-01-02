@@ -48,9 +48,9 @@ def cached_get(timeout, *params):
             # path is provided. get_full_path includes the querystring and is
             # the more conservative approach but makes it trivially easy for a
             # request to bust through the cache.
-            if not set(params).intersection(set((
-                "request.get_full_path()", "request.path", "request.path_info"
-            ))):
+            if not set(params).intersection(
+                set(("request.get_full_path()", "request.path", "request.path_info"))
+            ):
                 li.append(request.get_full_path())
 
             if "django.contrib.sites" in settings.INSTALLED_APPS:
@@ -87,11 +87,7 @@ def cached_get(timeout, *params):
                         headers = response.headers._store
                     else:
                         headers = getattr(response, "_headers", {})
-                    cache.set(
-                        cache_key,
-                        {"content": content, "headers": headers},
-                        timeout
-                    )
+                    cache.set(cache_key, {"content": content, "headers": headers}, timeout)
                     cache_meta(_thread_locals.ultracache_recorder, cache_key, request=request)
             else:
                 response = HttpResponse(cached["content"])
@@ -102,6 +98,7 @@ def cached_get(timeout, *params):
             return response
 
         return _wrapped_view
+
     return decorator
 
 
@@ -119,4 +116,5 @@ def ultracache(timeout, *params):
                 return super(WrappedClass, self).get(*args, **kwargs)
 
         return WrappedClass
+
     return decorator

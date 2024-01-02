@@ -10,10 +10,9 @@ except (AttributeError, KeyError):
     except AttributeError:
         tcp = []
 
-if ("django.core.context_processors.request" not in tcp) \
-    and ("django.template.context_processors.request" not in tcp):
-    raise RuntimeError(
-        "django.template.context_processors.request is required"
-    )
+if ("django.core.context_processors.request" not in tcp) and (
+    "django.template.context_processors.request" not in tcp
+):
+    raise RuntimeError("django.template.context_processors.request is required")
 
 import ultracache.monkey

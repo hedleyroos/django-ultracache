@@ -26,8 +26,7 @@ except (AttributeError, KeyError):
 
 @receiver(post_save)
 def on_post_save(sender, **kwargs):
-    """Expire ultracache cache keys affected by this object
-    """
+    """Expire ultracache cache keys affected by this object"""
     if not invalidate:
         return
     if kwargs.get("raw", False):
@@ -95,8 +94,7 @@ def on_post_save(sender, **kwargs):
 
 @receiver(post_delete)
 def on_post_delete(sender, **kwargs):
-    """Expire ultracache cache keys affected by this object
-    """
+    """Expire ultracache cache keys affected by this object"""
     if not invalidate:
         return
     if kwargs.get("raw", False):

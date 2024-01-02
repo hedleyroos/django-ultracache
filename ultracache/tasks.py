@@ -1,4 +1,5 @@
 import json
+
 try:
     from urllib.parse import urlparse
     from urllib.parse import quote
@@ -7,8 +8,10 @@ except ImportError:
     from urllib import quote
 
 from celery import shared_task
+
 try:
     import pika
+
     DO_TASK = True
 except ImportError:
     DO_TASK = False
@@ -29,18 +32,14 @@ def broadcast_purge(path, headers=None):
         # unchanged but as soon as sub-paths are encountered this encoding
         # becomes necessary.
         parsed = urlparse(settings.CELERY_BROKER_URL)
-        url = "%s://%s/%s" % (
-            parsed.scheme,
-            parsed.netloc,
-            quote(parsed.path[1:], safe="")
-        )
+        url = "%s://%s/%s" % (parsed.scheme, parsed.netloc, quote(parsed.path[1:], safe=""))
     connection = pika.BlockingConnection(pika.URLParameters(url))
     channel = connection.channel()
     channel.exchange_declare(exchange="purgatory", exchange_type="fanout")
     channel.basic_publish(
         exchange="purgatory",
         routing_key="",
-        body=json.dumps({"path": path, "headers": headers or {}})
+        body=json.dumps({"path": path, "headers": headers or {}}),
     )
     connection.close()
     return True

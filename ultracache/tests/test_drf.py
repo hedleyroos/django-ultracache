@@ -25,28 +25,20 @@ class DRFTestCase(TestCase):
 
         # Superuser
         cls.superuser = cls.user_model.objects.create(
-            username="superuser",
-            email="superuser@test.com",
-            is_superuser=True,
-            is_staff=True
+            username="superuser", email="superuser@test.com", is_superuser=True, is_staff=True
         )
         cls.superuser.set_password("password")
         cls.superuser.save()
 
         # Staff
         cls.staff = cls.user_model.objects.create(
-            username="staff",
-            email="staff@test.com",
-            is_staff=True
+            username="staff", email="staff@test.com", is_staff=True
         )
         cls.staff.set_password("password")
         cls.staff.save()
 
         # Plain user
-        cls.user = cls.user_model.objects.create(
-            username="user",
-            email="user@test.com"
-        )
+        cls.user = cls.user_model.objects.create(username="user", email="user@test.com")
         cls.user.set_password("password")
         cls.user.save()
 
@@ -87,9 +79,7 @@ class DRFTestCase(TestCase):
         self.assertEqual(as_json_3, as_json_4)
 
         # Modify via API to confirm that post_save is fired implicitly
-        data = {
-            "title": "Onze"
-        }
+        data = {"title": "Onze"}
         response = self.client.patch("/api/dummies/%s/" % self.one.pk, data)
         response = self.client.get("/api/dummies/")
         as_json_5 = response.json()

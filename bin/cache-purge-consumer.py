@@ -20,8 +20,9 @@ class Consumer:
     def __init__(self):
         self.pool = ThreadPool()
         parser = OptionParser()
-        parser.add_option("-c", "--config", dest="config",
-                  help="Configuration file", metavar="FILE")
+        parser.add_option(
+            "-c", "--config", dest="config", help="Configuration file", metavar="FILE"
+        )
         (options, args) = parser.parse_args()
         config_file = options.config
         self.config = {}
@@ -43,23 +44,16 @@ class Consumer:
 
     def connect(self):
         parameters = pika.URLParameters(
-            self.config.get(
-                "rabbit-url",
-                "amqp://guest:guest@127.0.0.1:5672/%2F"
-            )
+            self.config.get("rabbit-url", "amqp://guest:guest@127.0.0.1:5672/%2F")
         )
         self.connection = pika.BlockingConnection(parameters)
         self.channel = self.connection.channel()
-        self.channel.exchange_declare(
-            exchange="purgatory", exchange_type="fanout"
-        )
+        self.channel.exchange_declare(exchange="purgatory", exchange_type="fanout")
         queue = self.channel.queue_declare(exclusive=True)
         queue_name = queue.method.queue
         self.channel.queue_bind(exchange="purgatory", queue=queue_name)
         self.channel.basic_qos(prefetch_count=1)
-        self.channel.basic_consume(
-            self.on_message, queue=queue_name, no_ack=False, exclusive=True
-        )
+        self.channel.basic_consume(self.on_message, queue=queue_name, no_ack=False, exclusive=True)
 
     def on_message(self, channel, method_frame, header_frame, body):
         self.pool.apply_async(self.handle_message, (body,))
@@ -82,17 +76,17 @@ class Consumer:
                     final_headers = {"Host": host}
                     final_headers.update(headers)
                     response = requests.request(
-                        "PURGE", "http://" \
-                            + self.config.get("proxy-address", "127.0.0.1") + path,
+                        "PURGE",
+                        "http://" + self.config.get("proxy-address", "127.0.0.1") + path,
                         headers=final_headers,
-                        timeout=10
+                        timeout=10,
                     )
                 else:
                     response = requests.request(
-                        "PURGE", "http://" \
-                            + self.config.get("proxy-address", "127.0.0.1") + path,
+                        "PURGE",
+                        "http://" + self.config.get("proxy-address", "127.0.0.1") + path,
                         timeout=10,
-                        headers=headers
+                        headers=headers,
                     )
             except Exception as exception:
                 msg = traceback.format_exc()

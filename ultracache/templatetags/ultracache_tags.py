@@ -1,4 +1,5 @@
 from django import template
+
 try:
     from django.utils.encoding import force_str
 except ImportError:
@@ -98,8 +99,10 @@ def do_ultracache(parser, token):
     parser.delete_first_token()
     tokens = token.split_contents()
     if len(tokens) < 3:
-        raise TemplateSyntaxError(""%r" tag requires at least 2 arguments." % tokens[0])
-    return UltraCacheNode(nodelist,
+        raise TemplateSyntaxError("" % r" tag requires at least 2 arguments." % tokens[0])
+    return UltraCacheNode(
+        nodelist,
         parser.compile_filter(tokens[1]),
-        tokens[2], # fragment_name can"t be a variable.
-        [parser.compile_filter(token) for token in tokens[3:]])
+        tokens[2],  # fragment_name can"t be a variable.
+        [parser.compile_filter(token) for token in tokens[3:]],
+    )

@@ -6,7 +6,6 @@ from ultracache.tests.models import DummyModel
 
 
 class DummySerializer(serializers.ModelSerializer):
-
     class Meta:
         model = DummyModel
         if not django.get_version().startswith("1.6"):

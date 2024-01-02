@@ -2,13 +2,12 @@ from django.core.cache import cache
 from django.views.generic.base import TemplateView
 
 from ultracache.decorators import cached_get, ultracache
-from ultracache.tests.models import DummyModel, DummyForeignModel, \
-    DummyOtherModel
+from ultracache.tests.models import DummyModel, DummyForeignModel, DummyOtherModel
 
 
 class RenderView(TemplateView):
-    """Simple view that renders a dummy model.
-    """
+    """Simple view that renders a dummy model."""
+
     template_name = "ultracache/render_view.html"
 
     def get_context_data(self, **kwargs):
@@ -47,7 +46,6 @@ class BaseCachedView(TemplateView):
 
 
 class MethodCachedView(BaseCachedView):
-
     @cached_get(300, "request.is_secure()", 456)
     def get(self, *args, **kwargs):
         return super(MethodCachedView, self).get(*args, **kwargs)

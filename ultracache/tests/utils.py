@@ -2,7 +2,6 @@ from collections import OrderedDict
 
 
 class DummyProxy(dict):
-
     def make_key(self, path, headers=None):
         key = path
         if headers is not None:
@@ -10,8 +9,11 @@ class DummyProxy(dict):
         return key
 
     def cache(self, request, value):
-        headers = {k[5:].replace("_", "-").lower(): v for \
-            k, v in request.META.items() if k.startswith("HTTP_")}
+        headers = {
+            k[5:].replace("_", "-").lower(): v
+            for k, v in request.META.items()
+            if k.startswith("HTTP_")
+        }
         key = self.make_key(request.get_full_path(), headers)
         self[key] = value
 
@@ -19,7 +21,7 @@ class DummyProxy(dict):
         # The test framework sends an empty cookie with each request. Avoid
         # copy pasta in the individual tests and just add that header here.
         if headers is None:
-            headers = {u"cookie": u""}
+            headers = {"cookie": ""}
         key = self.make_key(path, headers)
         return key in self
 
@@ -27,6 +29,7 @@ class DummyProxy(dict):
         key = self.make_key(path, headers)
         if key in self:
             del self[key]
+
 
 dummy_proxy = DummyProxy()
 

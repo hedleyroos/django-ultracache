@@ -16,14 +16,11 @@ def render_view(parser, token):
     """{% render_view view_name %}"""
     tokens = token.split_contents()
     if len(tokens) != 2:
-        raise template.TemplateSyntaxError(
-            "render_view view_name %}"
-        )
+        raise template.TemplateSyntaxError("render_view view_name %}")
     return RenderViewNode(tokens[1])
 
 
 class RenderViewNode(template.Node):
-
     def __init__(self, view_name):
         self.view_name = template.Variable(view_name)
 

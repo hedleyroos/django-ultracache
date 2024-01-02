@@ -17,16 +17,12 @@ except (AttributeError, KeyError):
     MAX_SIZE = 1000000
 
 try:
-    CONSIDER_HEADERS = [
-        header.lower() for header in settings.ULTRACACHE["consider-headers"]
-    ]
+    CONSIDER_HEADERS = [header.lower() for header in settings.ULTRACACHE["consider-headers"]]
 except (AttributeError, KeyError):
     CONSIDER_HEADERS = []
 
 try:
-    CONSIDER_COOKIES = [
-        cookie.lower() for cookie in settings.ULTRACACHE["consider-cookies"]
-    ]
+    CONSIDER_COOKIES = [cookie.lower() for cookie in settings.ULTRACACHE["consider-cookies"]]
 except (AttributeError, KeyError):
     CONSIDER_COOKIES = []
 
@@ -40,8 +36,8 @@ consider-headers"
 
 def reduce_list_size(li):
     """Return two lists
-        - the last N items of li whose total size is less than MAX_SIZE
-        - the rest of the original list li
+    - the last N items of li whose total size is less than MAX_SIZE
+    - the rest of the original list li
     """
     # sys.getsizeof is nearly useless. All our data is stringable so rather
     # use that as a measure of size.
@@ -74,10 +70,13 @@ def cache_meta(recorder, cache_key, start_index=0, request=None):
             if (k == "HTTP_COOKIE") and CONSIDER_COOKIES:
                 cookie = SimpleCookie()
                 cookie.load(v)
-                headers["cookie"] = "; ".join([
-                    "%s=%s" % (k, morsel.value) for k, morsel \
-                        in sorted(cookie.items()) if k in CONSIDER_COOKIES
-                ])
+                headers["cookie"] = "; ".join(
+                    [
+                        "%s=%s" % (k, morsel.value)
+                        for k, morsel in sorted(cookie.items())
+                        if k in CONSIDER_COOKIES
+                    ]
+                )
             elif k.startswith("HTTP_"):
                 k = k[5:].replace("_", "-").lower()
                 if k in CONSIDER_HEADERS:
@@ -188,10 +187,11 @@ def cache_meta(recorder, cache_key, start_index=0, request=None):
                 to_set_content_types_paths[key] = keep
         if path is not None:
             if [path, headers] not in keep:
-               if key not in to_set_content_types_paths:
+                if key not in to_set_content_types_paths:
                     to_set_content_types_paths[key] = keep
-               to_set_content_types_paths[key] = to_set_content_types_paths[key] \
-                    + [[path, headers]]
+                to_set_content_types_paths[key] = to_set_content_types_paths[key] + [
+                    [path, headers]
+                ]
     if to_set_content_types_paths == di:
         to_set_content_types_paths = {}
 
@@ -229,6 +229,7 @@ def get_current_site_pk(request):
     """Seemingly pointless function is so calling code doesn't have to worry
     about the import issues between Django 1.6 and later."""
     from django.contrib.sites.models import Site
+
     try:
         from django.contrib.sites.shortcuts import get_current_site
     except ImportError:
@@ -238,13 +239,14 @@ def get_current_site_pk(request):
 
 class EmptyMarker:
     pass
+
+
 empty_marker_1 = EmptyMarker()
 empty_marker_2 = EmptyMarker()
 
 
 class Ultracache:
-    """Cache arbitrary pieces of Python code.
-    """
+    """Cache arbitrary pieces of Python code."""
 
     def __init__(self, timeout, name, *params, request=None):
         self.timeout = timeout
@@ -269,14 +271,12 @@ class Ultracache:
 
     def cache(self, value):
         if self.used:
-            raise RuntimeError(
-                "The cache method may only be called once per Ultracache object."
-            )
+            raise RuntimeError("The cache method may only be called once per Ultracache object.")
         cache.set(self.cache_key, value, self.timeout)
         cache_meta(
             _thread_locals.ultracache_recorder,
             self.cache_key,
             start_index=self.start_index,
-            request=self.request
+            request=self.request,
         )
         self.used = True
