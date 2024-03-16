@@ -13,7 +13,6 @@ setup(
     url="http://github.com/hedleyroos/django-ultracache",
     packages=find_packages(),
     dependency_links=[],
-    install_requires=["Django>=2.0", "requests", "pika>=0.11,<1.0", "PyYAML>=5.0,<6.0"],
     include_package_data=True,
     classifiers=[
         "Programming Language :: Python",

@@ -20,7 +20,6 @@ INSTALLED_APPS = (
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
-    "rest_framework",
 )
 
 CACHES = {
@@ -59,6 +58,5 @@ MIDDLEWARE = [
 
 ULTRACACHE = {
     "purge": {"method": "ultracache.tests.utils.dummy_purger"},
-    "drf": {"viewsets": {"*": {}}},
     "consider-headers": ["cookie"],
 }
