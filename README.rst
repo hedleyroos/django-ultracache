@@ -5,7 +5,7 @@ https://github.com/hedleyroos/django-ultracache is the official home of the proj
 
 Django Ultracache
 =================
-**Cache views, template fragments and arbitrary Python code. Monitor Django object changes to perform automatic fine-grained cache invalidation from Django level, through proxies, to the browser. Make Django really fast. **
+**Cache views, template fragments and arbitrary Python code. Monitor Django object changes to perform automatic fine-grained cache invalidation from Django level, through proxies, to the browser. Make Django really fast.**
 
 .. figure:: https://travis-ci.org/hedleyroos/django-ultracache.svg?branch=develop
    :align: center
