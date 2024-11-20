@@ -19,17 +19,20 @@ Overview
 
 Cache views, template fragments and arbitrary Python code. Once cached we
 either avoid database queries and expensive computations, depending on the use
-case. In all cases affected caches are automatically expired when objects "red"
-or "blue" are modified, without us having to explicitly make the cache aware of
-"red" or "blue".
+case.
+
+An object may contribute to a cached item, without us having to make the cached item
+aware of the object. When this object is modified all affected cached items are automatically
+invalidated.
+
+The invalidation takes place all the way from Django, through HTTP gateways, to the browser itself.
 
 View::
 
     from ultracache.decorators import ultracache
 
     # The decorator with no parameters automatically caches on the request path
-    # and a minimal
-    # set of hidden parameters.
+    # and a minimal set of hidden parameters.
     @ultracache(300)
     class MyView(TemplateView):
         template_name = "my_view.html"
@@ -196,10 +199,10 @@ Specifying a good cache key
 The cache key decides whether a piece of code or template is going to be evaluated further. The
 cache key must therefore accurately and minimally describe what is being subjected to caching.
 
-todo
-
 Django Rest Framework viewset caching
 *************************************
+
+This is experimental and may be removed.
 
 Cache ``list`` and ``retrieve`` actions on viewsets::
 
