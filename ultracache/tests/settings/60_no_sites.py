@@ -20,7 +20,6 @@ INSTALLED_APPS = (
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
-    "django.contrib.sites",
 )
 
 CACHES = {
@@ -62,4 +61,3 @@ ULTRACACHE = {
     "drf": {"viewsets": {"*": {}}},
     "consider-headers": ["cookie"],
 }
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
