@@ -1,6 +1,6 @@
 include AUTHORS.rst
 include CHANGELOG.rst
 include LICENSE
-include README.rst
+include README.md
 recursive-include twisted *
 recursive-include ultracache *

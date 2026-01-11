@@ -3,9 +3,10 @@ from setuptools import setup, find_packages
 setup(
     name="django-ultracache",
     description="Cache views, template fragments and arbitrary Python code. Monitor Django object changes to perform automatic fine-grained cache invalidation from Django level, through proxies, to the browser. Make Django really fast.",
-    long_description=open("README.rst", "r").read()
+    long_description=open("README.md", "r").read()
     + open("AUTHORS.rst", "r").read()
     + open("CHANGELOG.rst", "r").read(),
+    long_description_content_type="text/markdown",
     version="2.3",
     author="Hedley Roos",
     author_email="hedleyroos@gmail.com",
