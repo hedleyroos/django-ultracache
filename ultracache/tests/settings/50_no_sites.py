@@ -61,3 +61,4 @@ ULTRACACHE = {
     "drf": {"viewsets": {"*": {}}},
     "consider-headers": ["cookie"],
 }
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

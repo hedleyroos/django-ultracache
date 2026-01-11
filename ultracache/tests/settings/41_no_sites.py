@@ -60,3 +60,4 @@ ULTRACACHE = {
     "purge": {"method": "ultracache.tests.utils.dummy_purger"},
     "consider-headers": ["cookie"],
 }
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
