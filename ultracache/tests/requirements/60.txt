@@ -1,0 +1,4 @@
+Django>=6.0,<6.1
+requests~=2.20.0
+django-test-without-migrations==0.6
+celery>=5.0

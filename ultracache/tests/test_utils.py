@@ -20,36 +20,36 @@ class UtilsTestCase(TestCase):
 
         # Caching with object one
         uc = Ultracache(3600, "a", "b")
-        self.failIf(uc)
+        self.assertFalse(uc)
         uc.cache(one.title)
 
         uc = Ultracache(3600, "a", "b")
-        self.failUnless(uc)
+        self.assertTrue(uc)
         self.assertEqual(uc.cached, one.title)
 
         one.title = "Onex"
         one.save()
 
         uc = Ultracache(3600, "a", "b")
-        self.failIf(uc)
+        self.assertFalse(uc)
 
         # Caching with object two. Ensure object one doesn't bleed into this
         # section.
         uc = Ultracache(3600, "c", "d")
-        self.failIf(uc)
+        self.assertFalse(uc)
         uc.cache(two.title)
 
         uc = Ultracache(3600, "c", "d")
-        self.failUnless(uc)
+        self.assertTrue(uc)
         self.assertEqual(uc.cached, two.title)
 
         two.title = "Onez"
         one.save()
         uc = Ultracache(3600, "c", "d")
-        self.failUnless(uc)
+        self.assertTrue(uc)
 
         two.title = "Twox"
         two.save()
 
         uc = Ultracache(3600, "c", "d")
-        self.failIf(uc)
+        self.assertFalse(uc)
