@@ -2,11 +2,11 @@ from setuptools import setup, find_packages
 
 setup(
     name="django-ultracache",
-    description="Drop-in replacement for Django's template fragment caching. Provides automatic cache invalidation.",
+    description="Cache views, template fragments and arbitrary Python code. Monitor Django object changes to perform automatic fine-grained cache invalidation from Django level, through proxies, to the browser. Make Django really fast.",
     long_description=open("README.rst", "r").read()
     + open("AUTHORS.rst", "r").read()
     + open("CHANGELOG.rst", "r").read(),
-    version="2.2",
+    version="2.3",
     author="Hedley Roos",
     author_email="hedleyroos@gmail.com",
     license="BSD",
