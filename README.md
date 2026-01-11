@@ -1,10 +1,10 @@
 # Django Ultracache
 
-**Automatic, dependency-aware cache invalidation for Django.**
+**Cache views, template fragments and arbitrary Python code. Monitor Django object changes to perform automatic fine-grained cache invalidation from Django level, through proxies, to the browser. Make Django really fast.**
 
 Standard Django caching is great, but invalidation is hard. You usually end up setting short timeouts or writing complex logic to clear keys when data changes.
 
-**Ultracache solves this complexity.** It automatically tracks every database object accessed within a cached block. When you save or delete that object anywhere in your application, Ultracache instantly busts the relevant cache keys.
+**Ultracache solves this complexity.** It automatically tracks every database object accessed within a cached block. If a tracked object is modified or deleted, the cache is expired. Crucially, if a *new* object is created that shares a content type with any tracked object, the cache is also expired to ensure lists remain up-to-date.
 
 ## Why use it?
 
@@ -25,7 +25,9 @@ Use the `{% ultracache %}` tag exactly like Django's `{% cache %}`.
 {# Cache this sidebar for 24 hours #}
 {% ultracache 86400 "sidebar_widget" %}
     
-    {# If any Book accessed here is saved/deleted, this block invalidates #}
+    {# INVALIDATION LOGIC: #}
+    {# 1. Modifying or deleting any 'book' displayed here -> Invalidates this block. #}
+    {# 2. Creating a NEW Book -> Invalidates this block (because it tracks the Book ContentType). #}
     {% for book in books %}
         <div class="book">
              {{ book.title }}
@@ -51,6 +53,10 @@ class BookListView(TemplateView):
     def get_context_data(self, **kwargs):
         # Even though the fetching happens here, Ultracache 
         # tracks the specific objects rendered in the template.
+        
+        # INVALIDATION LOGIC:
+        # - Any change to an existing Book -> Invalidates the view cache.
+        # - Any new Book created -> Invalidates the view cache.
         return {"books": Book.objects.all()}
 ```
 
@@ -71,11 +77,15 @@ else:
     # Cache miss. Perform the calculation.
     
     # Ultracache is "watching"! 
-    # Any database objects accessed in this block (e.g., the Country itself, 
-    # and all the Person rows iterated over in the calculation) 
-    # are automatically recorded as dependencies.
+    
+    # 1. Accessing 'country' registers it as a dependency.
+    #    -> If 'country' is saved/deleted, this cache invalidates.
     country = Country.objects.get(code=country_code)
-    median_age = country.calculate_median_age()  # iterators over huge Person table
+    
+    # 2. Iterating over Persons registers them AND the Person ContentType.
+    #    -> If any Person in this list is modified -> Invalidates.
+    #    -> If a NEW Person is created -> Invalidates.
+    median_age = country.calculate_median_age()
     
     # Store the result
     uc.cache(median_age)
