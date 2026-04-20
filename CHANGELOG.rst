@@ -1,10 +1,11 @@
 Changelog
 =========
 
-next
-----
-#. Django 4.1, 4.2 and 5.0 compatibility.
-#. Remove tests for versions older than Django 4.
+2.3
+---
+
+#. Django 4.2, 5.0, and 6.0 compatibility.
+#. Remove tests for versions older than Django 4.1.
 #. Remove support for Django Rest Framework caching.
 
 2.2
