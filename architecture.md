@@ -57,7 +57,7 @@ The `@cached_get` decorator brings this functionality to entire views.
 | File | Purpose |
 |------|---------|
 | `ultracache/templatetags/ultracache_tags.py` | Implementation of the `{% ultracache %}` tag. |
-| `ultracache/monkey.py` | Patches `Model.__getattribute__` and variable resolution to intercept object access. |
+| `ultracache/monkey.py` | Patches `Model.__getattribute__` to intercept object access. |
 | `ultracache/signals.py` | Signal handlers that trigger invalidation on model save/delete. |
 | `ultracache/utils.py` | Logic for writing the registry (metadata) to the cache backend. |
 | `ultracache/decorators.py` | `@cached_get` decorator for view-level caching. |

@@ -231,14 +231,10 @@ def cache_meta(recorder, cache_key, start_index=0, request=None):
 
 
 def get_current_site_pk(request):
-    """Seemingly pointless function is so calling code doesn't have to worry
-    about the import issues between Django 1.6 and later."""
-    from django.contrib.sites.models import Site
+    """Centralize the import so calling code doesn't require the sites
+    framework to be installed."""
+    from django.contrib.sites.shortcuts import get_current_site
 
-    try:
-        from django.contrib.sites.shortcuts import get_current_site
-    except ImportError:
-        from django.contrib.sites.models import get_current_site
     return get_current_site(request).pk
 
 

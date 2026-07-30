@@ -1,6 +1,5 @@
 import hashlib
 import re
-import types
 import warnings
 from functools import wraps, WRAPPER_ASSIGNMENTS, partial
 
@@ -8,7 +7,6 @@ from django.conf import settings
 from django.core.cache import cache
 from django.http import HttpResponse
 from django.template.response import TemplateResponse
-from django.views.generic.base import TemplateResponseMixin
 
 from ultracache import _thread_locals
 from ultracache.utils import cache_meta, get_current_site_pk

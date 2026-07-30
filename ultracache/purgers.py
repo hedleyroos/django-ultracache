@@ -4,7 +4,7 @@ from django.conf import settings
 
 
 def broadcast(path, headers=None):
-    # The preferred methody requires RabbitMQ and celery being installed and
+    # The preferred method requires RabbitMQ and celery being installed and
     # configured.
     from ultracache.tasks import broadcast_purge
 

@@ -1,13 +1,6 @@
 from django import template
 
-try:
-    from django.utils.encoding import force_str
-except ImportError:
-    from django.utils.encoding import force_text as force_str
-try:
-    from django.utils.translation import ugettext as _
-except ImportError:
-    from django.utils.translation import gettext as _
+from django.utils.encoding import force_str
 from django.utils.functional import Promise
 from django.template import TemplateSyntaxError
 from django.templatetags.cache import CacheNode
@@ -29,12 +22,9 @@ class UltraCacheNode(CacheNode):
     variables. Allow translated strings."""
 
     def __init__(self, *args):
-        # Django 1.7 introduced cache_name. Using different caches makes
-        # invalidation difficult. It will be supported in a future version.
-        try:
-            super(UltraCacheNode, self).__init__(*args, cache_name=None)
-        except TypeError:
-            super(UltraCacheNode, self).__init__(*args)
+        # Using different caches makes invalidation difficult. cache_name will
+        # be supported in a future version.
+        super().__init__(*args, cache_name=None)
 
     def render(self, context):
         try:

@@ -8,7 +8,7 @@ def _cleanup():
         delattr(_thread_locals, "_ultracache_attr_marker")
 
 
-class UltraCacheMiddleware(object):
+class UltraCacheMiddleware:
     """Middleware to ensure thread locals is cleaned up."""
 
     def __init__(self, get_response=None):

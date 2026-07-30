@@ -1,8 +1,4 @@
-import threading
 from contextvars import ContextVar
-
-
-default_app_config = "ultracache.apps.UltracacheAppConfig"
 
 
 class ContextVarsLocal:
@@ -37,5 +33,4 @@ class ContextVarsLocal:
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
 
-# _thread_locals = threading.local()
 _thread_locals = ContextVarsLocal()
