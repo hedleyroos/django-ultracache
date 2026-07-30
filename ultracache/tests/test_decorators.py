@@ -1,4 +1,5 @@
 import warnings
+from functools import partial
 from unittest import mock
 
 from django.conf import settings
@@ -177,3 +178,88 @@ class ClassDecoratorMetadataTestCase(SimpleTestCase):
         self.assertEqual(Decorated.__qualname__, Original.__qualname__)
         self.assertEqual(Decorated.__module__, Original.__module__)
         self.assertEqual(Decorated.__doc__, "Original docstring.")
+
+
+class CachedGetBypassTestCase(TestCase):
+    """cached_get must bypass caching for non-GET requests and requests
+    carrying messages."""
+
+    if "django.contrib.sites" in settings.INSTALLED_APPS:
+        fixtures = ["sites.json"]
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.factory = RequestFactory()
+
+    def test_post_request_is_never_cached(self):
+        calls = []
+
+        @cached_get(300)
+        def view(request):
+            calls.append(1)
+            return HttpResponse("rendered %s" % len(calls))
+
+        view(self.factory.post("/no-cache-post/"))
+        response = view(self.factory.post("/no-cache-post/"))
+        # The view ran both times, nothing was cached
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(response.content, b"rendered 2")
+
+    def test_request_with_messages_is_never_cached(self):
+        calls = []
+
+        @cached_get(300)
+        def view(request):
+            calls.append(1)
+            return HttpResponse("rendered %s" % len(calls))
+
+        request = self.factory.get("/no-cache-messages/")
+        request._messages = ["a message"]
+        view(request)
+        response = view(request)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(response.content, b"rendered 2")
+
+
+class CachedGetKeyComputationTestCase(TestCase):
+    """Cache key computation edge paths: partial view functions and view
+    kwargs."""
+
+    if "django.contrib.sites" in settings.INSTALLED_APPS:
+        fixtures = ["sites.json"]
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.factory = RequestFactory()
+
+    def test_partial_view_func(self):
+        calls = []
+
+        def base_view(request):
+            calls.append(1)
+            return HttpResponse("rendered %s" % len(calls))
+
+        view = cached_get(300)(partial(base_view))
+        response1 = view(self.factory.get("/partial-view/"))
+        response2 = view(self.factory.get("/partial-view/"))
+        # Second call was served from cache
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(response1.content, response2.content)
+
+    def test_view_kwargs_contribute_to_cache_key(self):
+        calls = []
+
+        @cached_get(300)
+        def view(request, **kwargs):
+            calls.append(1)
+            return HttpResponse("rendered %s" % len(calls))
+
+        view(self.factory.get("/kwargs-view/"), slug="aaa")
+        view(self.factory.get("/kwargs-view/"), slug="aaa")
+        # Same kwargs: cached
+        self.assertEqual(len(calls), 1)
+        # Different kwargs: fresh render
+        view(self.factory.get("/kwargs-view/"), slug="bbb")
+        self.assertEqual(len(calls), 2)

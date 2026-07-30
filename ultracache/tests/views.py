@@ -1,4 +1,5 @@
 from django.core.cache import cache
+from django.http import HttpResponse
 from django.views.generic.base import TemplateView
 
 from ultracache.decorators import cached_get, ultracache
@@ -22,6 +23,12 @@ class RenderView(TemplateView):
         except DummyOtherModel.DoesNotExist:
             pass
         return context
+
+
+def plain_view(request):
+    """Old-school function view returning a plain HttpResponse. Used to
+    exercise the HttpResponse branch of the render_view test tag."""
+    return HttpResponse("plain = ok")
 
 
 class BaseCachedView(TemplateView):

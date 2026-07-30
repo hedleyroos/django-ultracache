@@ -87,3 +87,19 @@ class PurgersTestCase(SimpleTestCase):
         self.assertIn("/some/path/", output)
         self.assertIn("http://localhost:8080/some/path/", output)
         self.assertIn("boom", output)
+
+
+class BroadcastPurgerTestCase(SimpleTestCase):
+    """The broadcast purger delegates to the celery task."""
+
+    def test_broadcast_delegates_to_task(self):
+        with mock.patch("ultracache.tasks.broadcast_purge") as mocked:
+            purgers.broadcast("/some/path/", {"Host": "example.com"})
+        mocked.delay.assert_called_once_with(
+            "/some/path/", {"Host": "example.com"}
+        )
+
+    def test_broadcast_default_headers(self):
+        with mock.patch("ultracache.tasks.broadcast_purge") as mocked:
+            purgers.broadcast("/some/path/")
+        mocked.delay.assert_called_once_with("/some/path/", None)

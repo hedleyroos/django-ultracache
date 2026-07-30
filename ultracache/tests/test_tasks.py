@@ -46,8 +46,8 @@ class TasksGuardTestCase(SimpleTestCase):
         self.assertNotIn("<1.0", message)
 
 
-class BroadcastPurgeTestCase(SimpleTestCase):
-    """Item 27: broadcast_purge with a stubbed pika module."""
+class PikaStubTestCase(SimpleTestCase):
+    """Shared setup: install the pika stub and reload the tasks module."""
 
     def setUp(self):
         super().setUp()
@@ -69,6 +69,10 @@ class BroadcastPurgeTestCase(SimpleTestCase):
             else:
                 sys.modules[name] = module
         importlib.reload(self.tasks)
+
+
+class BroadcastPurgeTestCase(PikaStubTestCase):
+    """Item 27: broadcast_purge with a stubbed pika module."""
 
     @override_settings(ULTRACACHE={"rabbitmq-url": "amqp://guest:guest@rabbit/"})
     def test_publishes_purge_instruction(self):
@@ -109,3 +113,95 @@ class BroadcastPurgeTestCase(SimpleTestCase):
         kwargs = mocked_retry.call_args.kwargs
         self.assertIsInstance(kwargs["exc"], self.pika.exceptions.AMQPError)
         self.assertGreater(kwargs["countdown"], 0)
+
+
+class BroadcastPurgeUrlDerivationTestCase(PikaStubTestCase):
+    """Item 33: derivation of the RabbitMQ URL when no explicit
+    rabbitmq-url setting is configured."""
+
+    @override_settings(
+        ULTRACACHE={},
+        CELERY_BROKER_URL="amqp://guest:guest@celeryhost:5672/",
+    )
+    def test_url_derived_from_celery_broker_url(self):
+        result = self.tasks.broadcast_purge("/some/path/")
+        self.assertTrue(result)
+        self.pika.URLParameters.assert_called_once_with(
+            "amqp://guest:guest@celeryhost:5672/"
+        )
+
+    @override_settings(
+        ULTRACACHE={},
+        CELERY_BROKER_URL="amqp://guest:guest@celeryhost:5672/sub/vhost",
+    )
+    def test_url_derivation_quotes_the_broker_path(self):
+        # Pika requires the vhost path to be url encoded: slashes inside
+        # the path must become %2F.
+        result = self.tasks.broadcast_purge("/some/path/")
+        self.assertTrue(result)
+        self.pika.URLParameters.assert_called_once_with(
+            "amqp://guest:guest@celeryhost:5672/sub%2Fvhost"
+        )
+
+    @override_settings(
+        CELERY_BROKER_URL="amqp://guest:guest@celeryhost:5672/"
+    )
+    def test_missing_ultracache_setting_falls_back_to_celery_broker(self):
+        # No ULTRACACHE setting at all: the AttributeError branch
+        from django.conf import settings as django_settings
+
+        with override_settings():
+            del django_settings.ULTRACACHE
+            result = self.tasks.broadcast_purge("/some/path/")
+        self.assertTrue(result)
+        self.pika.URLParameters.assert_called_once_with(
+            "amqp://guest:guest@celeryhost:5672/"
+        )
+
+    @override_settings(ULTRACACHE={"rabbitmq-url": "amqp://rabbit/"})
+    def test_default_headers_publish_as_empty_dict(self):
+        result = self.tasks.broadcast_purge("/some/path/")
+        self.assertTrue(result)
+        self.channel.basic_publish.assert_called_once_with(
+            exchange="purgatory",
+            routing_key="",
+            body=json.dumps({"path": "/some/path/", "headers": {}}),
+        )
+
+
+class BroadcastPurgeRetryTestCase(PikaStubTestCase):
+    """Item 33: retry behaviour details on top of the base retry test."""
+
+    @override_settings(ULTRACACHE={"rabbitmq-url": "amqp://rabbit/"})
+    def test_first_retry_countdown_is_five_seconds(self):
+        # Exponential backoff starts at 5s: 5 * 2 ** retries with zero
+        # retries so far.
+        self.pika.BlockingConnection.side_effect = self.pika.exceptions.AMQPError(
+            "connection refused"
+        )
+        task = self.tasks.broadcast_purge
+        with mock.patch.object(
+            task, "retry", side_effect=Retry("retrying")
+        ) as mocked_retry:
+            with self.assertRaises(Retry):
+                task("/some/path/")
+        self.assertEqual(mocked_retry.call_args.kwargs["countdown"], 5)
+
+    @override_settings(ULTRACACHE={"rabbitmq-url": "amqp://rabbit/"})
+    def test_publish_failure_triggers_retry(self):
+        # An AMQP error while publishing (not only while connecting) must
+        # also be retried.
+        self.channel.basic_publish.side_effect = self.pika.exceptions.AMQPError(
+            "channel closed"
+        )
+        task = self.tasks.broadcast_purge
+        with mock.patch.object(
+            task, "retry", side_effect=Retry("retrying")
+        ) as mocked_retry:
+            with self.assertRaises(Retry):
+                task("/some/path/")
+        mocked_retry.assert_called_once()
+        self.assertIsInstance(
+            mocked_retry.call_args.kwargs["exc"],
+            self.pika.exceptions.AMQPError,
+        )
