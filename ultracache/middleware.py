@@ -4,8 +4,8 @@ from ultracache import _thread_locals
 def _cleanup():
     if hasattr(_thread_locals, "ultracache_recorder"):
         delattr(_thread_locals, "ultracache_recorder")
-    if hasattr(_thread_locals, "ultracache_attr_marker"):
-        delattr(_thread_locals, "ultracache_attr_marker")
+    if hasattr(_thread_locals, "_ultracache_attr_marker"):
+        delattr(_thread_locals, "_ultracache_attr_marker")
 
 
 class UltraCacheMiddleware(object):
@@ -24,7 +24,7 @@ class UltraCacheMiddleware(object):
         return self.process_response(request, response)
 
     def process_request(self, request):
-        setattr(_thread_locals, "ultracache_recorder", [])
+        pass
 
     def process_response(self, request, response):
         _cleanup()
