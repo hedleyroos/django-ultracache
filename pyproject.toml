@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-ultracache"
+version = "2.3"
+description = "Cache views, template fragments and arbitrary Python code. Monitor Django object changes to perform automatic fine-grained cache invalidation from Django level, through proxies, to the browser. Make Django really fast."
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.11"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Hedley Roos", email = "hedleyroos@gmail.com" }]
+dependencies = [
+    "Django>=4.1",
+    "requests",
+]
+classifiers = [
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Framework :: Django",
+    "Framework :: Django :: 4.1",
+    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.0",
+    "Framework :: Django :: 6.0",
+    "Intended Audience :: Developers",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+]
+
+[project.optional-dependencies]
+broadcast = ["celery", "pika>=1.0"]
+
+[project.urls]
+Homepage = "http://github.com/hedleyroos/django-ultracache"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["ultracache*"]

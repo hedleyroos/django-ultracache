@@ -16,6 +16,11 @@ Crucially, it also handles the "new object" problem: if a list of objects is cac
 *   **Full Stack Integration**: Can issue PURGE requests to Varnish, Nginx, or via RabbitMQ to clear downstream caches.
 *   **Nested Caching**: Fully supports nested `{% ultracache %}` tags.
 
+## Requirements
+
+*   Python >= 3.11
+*   Django >= 4.1 (works under both WSGI and ASGI)
+
 ## Installation
 
 1.  **Install the package:**
@@ -33,7 +38,7 @@ Crucially, it also handles the "new object" problem: if a list of objects is cac
     ]
     ```
 
-3.  **Add Middleware:**
+3.  **Add Middleware (recommended):**
     Add `UltraCacheMiddleware` to `MIDDLEWARE`. It should be placed near the top, receiving requests early and sending responses late.
 
     ```python
@@ -44,6 +49,14 @@ Crucially, it also handles the "new object" problem: if a list of objects is cac
         ...,
     ]
     ```
+
+    The middleware clears Ultracache's per-request recording state as soon
+    as the response leaves the middleware stack (also when a view raises).
+    It is recommended but not strictly required: nothing breaks
+    functionally without it, because a `request_finished` signal receiver
+    performs the same cleanup as a safety net at the very end of each
+    request. The middleware is both sync- and async-capable, so it adds no
+    thread-shifting overhead under ASGI.
 
 4.  **Check Context Processors:**
     Ensure `django.template.context_processors.request` is enabled (it usually is by default).
@@ -155,7 +168,7 @@ def get_user_metrics(user):
 
 Ultracache monkey-patches `django.db.models.Model.__getattribute__` to detect when any attribute of a model instance is accessed.
 
-1.  **Recording**: When you enter a `{% ultracache %}` block or a decorated view, a "recorder" is started in thread-local storage.
+1.  **Recording**: When you enter a `{% ultracache %}` block or a decorated view, a "recorder" is started in context-local storage (a `contextvars.ContextVar`, which is safe under both threaded WSGI and async ASGI).
 2.  **Tracking**: As you iterate over querysets or access model attributes (e.g., `{{ product.price }}`), Ultracache notes the object's `ContentType` and `primary key`.
 3.  **Registry**: When the block finishes rendering, Ultracache saves the content to the cache *and* writes a "registry" entry linking those objects to this specific cache key.
 4.  **Invalidation**: When an object is saved or deleted, a `post_save` or `post_delete` signal triggers. Ultracache checks the registry for any cache keys dependent on that object and deletes them.
@@ -177,9 +190,9 @@ ULTRACACHE = {
 
 The `url` should point to your caching proxy. Ultracache will append the resource path to this URL when issuing a purge.
 
-### Broadcast Purging (Celery)
+### Broadcast Purging (Celery + RabbitMQ)
 
-For multi-server setups, you can use RabbitMQ/Celery to broadcast purge instructions to all workers.
+For multi-server setups, you can broadcast purge instructions to all interested parties over RabbitMQ.
 
 ```python
 ULTRACACHE = {
@@ -189,7 +202,35 @@ ULTRACACHE = {
 }
 ```
 
-*Requires `celery` and `kombu` to be installed and configured.*
+This requires `celery` **and** `pika` to be installed (available together as
+the `broadcast` extra: `pip install django-ultracache[broadcast]`), plus a
+running RabbitMQ broker. Celery must be configured for your project; the
+purge instruction is queued as a Celery task which publishes the path (and
+relevant headers) to a fanout exchange named `purgatory` on RabbitMQ.
+
+By default the RabbitMQ connection is derived from `CELERY_BROKER_URL`. To
+use a different broker for purging, set:
+
+```python
+ULTRACACHE = {
+    "purge": {
+        "method": "ultracache.purgers.broadcast",
+    },
+    "rabbitmq-url": "amqp://guest:guest@127.0.0.1:5672/%2F",
+}
+```
+
+**The consumer script**: each server that fronts a reverse proxy runs the
+companion script `bin/cache-purge-consumer.py` (manage it with e.g.
+supervisor). It subscribes to the `purgatory` exchange and issues an HTTP
+`PURGE` request to the local proxy for every purge instruction it receives.
+It accepts a `-c`/`--config` option pointing at a YAML file with these
+optional keys:
+
+*   `rabbit-url`: the RabbitMQ connection URL (default `amqp://guest:guest@127.0.0.1:5672/%2F`).
+*   `proxy-address`: host/address of the proxy to purge (default `127.0.0.1`).
+*   `host`: if set, sent as the `Host` header with each purge request.
+*   `logfile`: a file path to log purges to, or `stdout`.
 
 ### Custom Cache Backend
 
@@ -207,9 +248,16 @@ ULTRACACHE = {
 2.  **Order of Operations**: Place `{% ultracache %}` as high as possible in your template DOM tree to maximize performance, but be mindful of parts that *must* remain dynamic (like CSRF tokens).
 3.  **Context Processors**: If your context processors access the database (e.g., loading a site menu), that access is also recorded. This means global site changes can invalidate page caches, which is usually desired behavior.
 
+## Upgrading from 2.x
+
+Version 3.0 changed the format of cached payloads, so all cache keys are
+now prefixed with `ucache3-`. Entries written by 2.x are simply ignored
+after an upgrade — no migration is needed; stale 2.x entries expire on
+their own. Expect a cold cache immediately after upgrading.
+
 ## Running Tests
 
 ```bash
-pip install -r requirements.txt
+pip install tox
 tox
 ```

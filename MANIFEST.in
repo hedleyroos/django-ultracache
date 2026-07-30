@@ -2,5 +2,6 @@ include AUTHORS.rst
 include CHANGELOG.rst
 include LICENSE
 include README.md
-recursive-include twisted *
 recursive-include ultracache *
+recursive-exclude * __pycache__
+recursive-exclude * *.pyc
