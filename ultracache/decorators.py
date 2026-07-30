@@ -7,16 +7,33 @@ from django.conf import settings
 from django.http import HttpResponse
 from django.template.response import TemplateResponse
 
-from ultracache import Recorder, set_recorder
+from ultracache import get_or_create_recorder
 from ultracache.utils import KEY_PREFIX, cache_meta, get_cache, get_current_site_pk
 
 
 # Legacy string parameters may only be dotted attribute traversal rooted in
 # ``request``, optionally followed by a single trailing no-argument call,
-# e.g. "request.is_secure()" or "request.path_info".
+# e.g. "request.is_secure()" or "request.path_info". Attribute segments
+# starting with an underscore are rejected: they expose private state and
+# enable dunder traversal like "request.__class__.__init__.__globals__".
 _legacy_param_pattern = re.compile(
-    r"^request(?P<attrs>(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?P<call>\(\))?$"
+    r"^request(?P<attrs>(?:\.[A-Za-z][A-Za-z0-9_]*)*)(?P<call>\(\))?$"
 )
+
+
+def _validate_legacy_param(param):
+    """Match ``param`` against the restricted legacy grammar. Returns the
+    match object, raising ValueError for anything unsupported."""
+    match = _legacy_param_pattern.match(param.strip())
+    if match is None:
+        raise ValueError(
+            "Unsupported string parameter %r: only dotted attribute "
+            "traversal of the request, optionally with a trailing "
+            "no-argument call, is allowed (eg. \"request.is_secure()\"); "
+            "attribute names may not start with an underscore. "
+            "Pass a callable accepting the request instead." % param
+        )
+    return match
 
 
 def resolve_legacy_param(param, request):
@@ -25,14 +42,7 @@ def resolve_legacy_param(param, request):
     Only dotted attribute traversal rooted in ``request``, optionally with a
     trailing no-argument call, is supported. Anything else raises ValueError.
     """
-    match = _legacy_param_pattern.match(param.strip())
-    if match is None:
-        raise ValueError(
-            "Unsupported string parameter %r: only dotted attribute "
-            "traversal of the request, optionally with a trailing "
-            "no-argument call, is allowed (eg. \"request.is_secure()\"). "
-            "Pass a callable accepting the request instead." % param
-        )
+    match = _validate_legacy_param(param)
     value = request
     attrs = match.group("attrs")
     if attrs:
@@ -56,6 +66,10 @@ def cached_get(timeout, *params):
                 DeprecationWarning,
                 stacklevel=2,
             )
+            # Validate eagerly so a bad legacy string fails at decoration
+            # (import) time instead of raising a 500 on the first request.
+            # Value resolution still happens per request.
+            _validate_legacy_param(param)
 
     def decorator(view_func):
         @wraps(view_func, assigned=WRAPPER_ASSIGNMENTS)
@@ -119,21 +133,37 @@ def cached_get(timeout, *params):
             cache = get_cache()
             cached = cache.get(cache_key, None)
             if cached is None:
-                # The get view as outermost caller may bluntly install a
-                # fresh recorder
-                recorder = Recorder()
-                set_recorder(recorder)
-                response = view_func(view_or_request, *args, **kwargs)
-                content = None
-                if isinstance(response, TemplateResponse):
-                    content = response.render().rendered_content
-                elif isinstance(response, HttpResponse):
-                    content = response.content
-                if content is not None:
-                    # Store the headers via the public mapping API
-                    headers = dict(response.headers)
-                    cache.set(cache_key, {"content": content, "headers": headers}, timeout)
-                    cache_meta(recorder, cache_key, request=request, timeout=timeout)
+                # Reuse the active recorder if one exists: the decorated
+                # view may be rendered inside another caching construct
+                # (e.g. an {% ultracache %} block) which holds a reference
+                # to it. Installing a fresh recorder would starve the
+                # enclosing block of its dependencies. When no recorder
+                # exists one is created lazily.
+                recorder = get_or_create_recorder()
+                start_index = len(recorder)
+                # Objects recorded before this point must be recorded again
+                # so they land in this view's slice of the recorder.
+                recorder.push_barrier(start_index)
+                try:
+                    response = view_func(view_or_request, *args, **kwargs)
+                    content = None
+                    if isinstance(response, TemplateResponse):
+                        content = response.render().rendered_content
+                    elif isinstance(response, HttpResponse):
+                        content = response.content
+                    if content is not None:
+                        # Store the headers via the public mapping API
+                        headers = dict(response.headers)
+                        cache.set(cache_key, {"content": content, "headers": headers}, timeout)
+                        cache_meta(
+                            recorder,
+                            cache_key,
+                            start_index=start_index,
+                            request=request,
+                            timeout=timeout,
+                        )
+                finally:
+                    recorder.pop_barrier(start_index)
             else:
                 response = HttpResponse(cached["content"])
                 for k, v in cached["headers"].items():

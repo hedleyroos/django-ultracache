@@ -1,4 +1,5 @@
 import importlib
+import time
 from unittest import mock
 
 from django import template
@@ -9,7 +10,7 @@ from django.test import SimpleTestCase, TestCase
 from django.test.client import RequestFactory
 from django.test.utils import override_settings
 
-from ultracache import Recorder, clear_recorder, utils
+from ultracache import Recorder, clear_recorder, get_or_create_recorder, utils
 from ultracache.utils import Ultracache, reduce_list_size
 from ultracache.tests.models import DummyModel
 
@@ -79,10 +80,13 @@ class CacheMetaTrimTestCase(TestCase):
         for k in stale_keys:
             cache.set(k, "stale cached fragment")
         stale_paths = [["/old-path-%03d/" % i, {}] for i in range(50)]
-        cache.set(obj_key, list(stale_keys))
-        cache.set(ct_key, list(stale_keys))
-        cache.set(pth_key, list(stale_paths))
-        cache.set(ct_pth_key, list(stale_paths))
+        # Registry values are {"expires": ..., "items": [...]} payloads
+        # (see utils.cache_meta)
+        expires = time.time() + 3600
+        cache.set(obj_key, {"expires": expires, "items": list(stale_keys)})
+        cache.set(ct_key, {"expires": expires, "items": list(stale_keys)})
+        cache.set(pth_key, {"expires": expires, "items": list(stale_paths)})
+        cache.set(ct_pth_key, {"expires": expires, "items": list(stale_paths)})
         return obj_key, pth_key, ct_key, ct_pth_key, stale_keys, stale_paths
 
     def test_oversized_metadata_lists_are_trimmed_and_tossed_keys_deleted(self):
@@ -105,7 +109,7 @@ class CacheMetaTrimTestCase(TestCase):
         # Object registry: trimmed to a tail of the stale keys plus the new
         # cache key.
         for key in (obj_key, ct_key):
-            value = cache.get(key)
+            value = cache.get(key)["items"]
             self.assertEqual(value[-1], "trim-content-key")
             kept = value[:-1]
             self.assertTrue(kept)
@@ -115,7 +119,7 @@ class CacheMetaTrimTestCase(TestCase):
 
         # The tossed fragment keys were deleted from the cache, the kept
         # ones survive. Both registries tossed the same prefix.
-        value = cache.get(obj_key)
+        value = cache.get(obj_key)["items"]
         kept = value[:-1]
         tossed = stale_keys[: len(stale_keys) - len(kept)]
         self.assertTrue(tossed)
@@ -128,7 +132,7 @@ class CacheMetaTrimTestCase(TestCase):
         # entry. Tossed paths are not cache keys so nothing is deleted for
         # them.
         for key in (pth_key, ct_pth_key):
-            value = cache.get(key)
+            value = cache.get(key)["items"]
             self.assertEqual(value[-1][0], "/trim-test/")
             kept = value[:-1]
             self.assertTrue(kept)
@@ -148,7 +152,7 @@ class CacheMetaTrimTestCase(TestCase):
         ):
             with mock.patch.object(utils, "MAX_SIZE", 400):
                 utils.cache_meta(recorder, "trim-fallback-key")
-        value = cache.get(obj_key)
+        value = cache.get(obj_key)["items"]
         self.assertEqual(value[-1], "trim-fallback-key")
         tossed = stale_keys[: len(stale_keys) - len(value[:-1])]
         self.assertTrue(tossed)
@@ -163,7 +167,9 @@ class CacheMetaTrimTestCase(TestCase):
             backend, "set_many", side_effect=NotImplementedError
         ):
             utils.cache_meta(recorder, "set-fallback-key")
-        self.assertEqual(cache.get("ucache3-993-5"), ["set-fallback-key"])
+        self.assertEqual(
+            cache.get("ucache3-993-5")["items"], ["set-fallback-key"]
+        )
         self.assertEqual(cache.get("set-fallback-key-objs"), [(993, 5)])
 
     def test_default_metadata_timeout_when_timeout_not_passed(self):
@@ -200,7 +206,7 @@ class CacheMetaHeadersTestCase(TestCase):
         with mock.patch.object(utils, "CONSIDER_COOKIES", ["alpha", "zeta"]):
             with mock.patch.object(utils, "CONSIDER_HEADERS", []):
                 utils.cache_meta(recorder, "cookie-key", request=request)
-        value = cache.get("ucache3-pth-771-1")
+        value = cache.get("ucache3-pth-771-1")["items"]
         self.assertEqual(len(value), 1)
         path, headers = value[0]
         self.assertEqual(path, "/cookie-path/")
@@ -217,7 +223,7 @@ class CacheMetaHeadersTestCase(TestCase):
         with mock.patch.object(utils, "CONSIDER_COOKIES", ["alpha"]):
             with mock.patch.object(utils, "CONSIDER_HEADERS", []):
                 utils.cache_meta(recorder, "no-cookie-key", request=request)
-        value = cache.get("ucache3-pth-772-1")
+        value = cache.get("ucache3-pth-772-1")["items"]
         self.assertEqual(value, [["/no-cookie-path/", {"cookie": ""}]])
 
     def test_consider_headers_filters_request_headers(self):
@@ -231,7 +237,7 @@ class CacheMetaHeadersTestCase(TestCase):
         with mock.patch.object(utils, "CONSIDER_COOKIES", []):
             with mock.patch.object(utils, "CONSIDER_HEADERS", ["x-custom"]):
                 utils.cache_meta(recorder, "header-key", request=request)
-        value = cache.get("ucache3-pth-773-1")
+        value = cache.get("ucache3-pth-773-1")["items"]
         self.assertEqual(len(value), 1)
         path, headers = value[0]
         self.assertEqual(path, "/header-path/")
@@ -438,6 +444,159 @@ class CacheAliasTestCase(TestCase):
         self.assertIsNone(caches["ultracache"].get(key))
         result = self.render(obj, "/cache-alias/")
         self.assertIn("title = Two", result)
+
+
+class RegistryTtlTestCase(TestCase):
+    """Issue 2 regression: a later caching block with a short timeout must
+    never lower the effective TTL of a shared per-object registry key that a
+    longer-lived block also depends on."""
+
+    if "django.contrib.sites" in settings.INSTALLED_APPS:
+        fixtures = ["sites.json"]
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        clear_recorder()
+        self.addCleanup(clear_recorder)
+
+    def test_backend_expiry_not_lowered_by_short_block(self):
+        one = DummyModel.objects.create(title="One", code="one")
+        ct = ContentType.objects.get_for_model(DummyModel)
+        key = "ucache3-%s-%s" % (ct.id, one.pk)
+        backend = caches["default"]
+        long_timeout = 86400 * 7
+
+        uc_long = Ultracache(long_timeout, "registry-ttl-long")
+        one.title
+        uc_long.cache("long content")
+
+        internal_key = backend.make_and_validate_key(key)
+        first_backend_expiry = backend._expire_info[internal_key]
+        self.assertGreaterEqual(
+            first_backend_expiry, time.time() + long_timeout - 5
+        )
+
+        # A second block with a short timeout touches the same object
+        uc_short = Ultracache(60, "registry-ttl-short")
+        one.title
+        uc_short.cache("short content")
+
+        # The registry key's effective TTL did not decrease
+        self.assertGreaterEqual(
+            backend._expire_info[internal_key], first_backend_expiry
+        )
+
+    def test_registry_payload_expires_is_monotonic_and_invalidation_works(self):
+        one = DummyModel.objects.create(title="One", code="one")
+        ct = ContentType.objects.get_for_model(DummyModel)
+        key = "ucache3-%s-%s" % (ct.id, one.pk)
+        long_timeout = 86400 * 7
+
+        uc_long = Ultracache(long_timeout, "registry-ttl-long-2")
+        one.title
+        uc_long.cache("long content")
+
+        payload = cache.get(key)
+        first_expires = payload["expires"]
+        self.assertGreaterEqual(first_expires, time.time() + long_timeout - 5)
+        self.assertIn(uc_long.cache_key, payload["items"])
+
+        uc_short = Ultracache(60, "registry-ttl-short-2")
+        one.title
+        uc_short.cache("short content")
+
+        payload = cache.get(key)
+        self.assertGreaterEqual(payload["expires"], first_expires)
+        self.assertIn(uc_long.cache_key, payload["items"])
+        self.assertIn(uc_short.cache_key, payload["items"])
+
+        # End-to-end: after the second (short) block, invalidation for the
+        # long block still works
+        clear_recorder()
+        one.save()
+        self.assertFalse(Ultracache(long_timeout, "registry-ttl-long-2"))
+        self.assertFalse(Ultracache(60, "registry-ttl-short-2"))
+
+    def test_none_timeout_registry_never_expires_even_after_short_block(self):
+        one = DummyModel.objects.create(title="One", code="one")
+        ct = ContentType.objects.get_for_model(DummyModel)
+        key = "ucache3-%s-%s" % (ct.id, one.pk)
+
+        uc_forever = Ultracache(None, "registry-ttl-forever")
+        one.title
+        uc_forever.cache("forever content")
+
+        payload = cache.get(key)
+        self.assertIsNone(payload["expires"])
+
+        uc_short = Ultracache(60, "registry-ttl-forever-short")
+        one.title
+        uc_short.cache("short content")
+
+        # Once "never expires", always "never expires"
+        payload = cache.get(key)
+        self.assertIsNone(payload["expires"])
+        backend = caches["default"]
+        internal_key = backend.make_and_validate_key(key)
+        self.assertIsNone(backend._expire_info.get(internal_key))
+
+
+class DeferredUltracacheTestCase(TestCase):
+    """Issue 3 regression: an Ultracache constructed inside a template
+    caching block whose compute happens after the block exits must still
+    register its dependencies."""
+
+    if "django.contrib.sites" in settings.INSTALLED_APPS:
+        fixtures = ["sites.json"]
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        clear_recorder()
+        self.addCleanup(clear_recorder)
+        self.factory = RequestFactory()
+
+    def test_deferred_compute_registers_dependencies(self):
+        one = DummyModel.objects.create(title="One", code="one")
+        recorder = get_or_create_recorder()
+        # The object is accessed (and recorded) before any caching block
+        one.title
+
+        holder = {}
+
+        def make_uc():
+            # Constructed inside the template tag's block, computed later
+            holder["uc"] = Ultracache(3600, "deferred-uc-test")
+            return ""
+
+        t = template.Template(
+            "{% load ultracache_tags %}"
+            "{% ultracache 1200 'test_deferred_wrapper' %}"
+            "{{ make_uc }}"
+            "{% endultracache %}"
+        )
+        request = self.factory.get("/deferred/")
+        t.render(template.Context({"request": request, "make_uc": make_uc}))
+
+        uc = holder["uc"]
+        self.assertFalse(uc)
+        # Deferred compute after the wrapping block exited re-accesses the
+        # same object
+        one.title
+        uc.cache(one.title)
+
+        ct = ContentType.objects.get_for_model(DummyModel)
+        key = "ucache3-%s-%s" % (ct.id, one.pk)
+        payload = cache.get(key)
+        # The object must be registered as a dependency of the Ultracache
+        self.assertIsNotNone(payload)
+        self.assertIn(uc.cache_key, payload["items"])
+
+        # End-to-end: saving the object invalidates the deferred entry
+        clear_recorder()
+        one.save()
+        self.assertFalse(Ultracache(3600, "deferred-uc-test"))
 
 
 class UtilsTestCase(TestCase):

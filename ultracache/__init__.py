@@ -8,32 +8,44 @@ class Recorder:
     Consumers (the template tag, ``cached_get`` and ``Ultracache``) snapshot
     ``len(recorder)`` when a caching block starts and later read
     ``recorder[start_index:]``. A tuple is only skipped when it has already
-    been recorded at or after the current dedup *barrier* — the start index
-    of the innermost active caching block. A tuple recorded before the
-    barrier is recorded again so that it still lands in the active block's
-    slice; enclosing blocks may then see it more than once, which
-    ``cache_meta`` deduplicates cheaply.
+    been recorded at or after the current effective dedup *barrier*. A tuple
+    recorded before the barrier is recorded again so that it still lands in
+    the active block's slice; enclosing blocks may then see it more than
+    once, which ``cache_meta`` deduplicates cheaply.
+
+    Each active caching construct pushes its start index as a barrier with
+    ``push_barrier`` and pops it with ``pop_barrier`` when it stops
+    consuming the recorder. The effective barrier is the MAX of all active
+    barriers: constructs may outlive the block they were created in
+    (deferred compute), so a single saved/restored integer would lose
+    dependencies. A barrier that is too high is safe — it only causes
+    re-records which ``cache_meta`` dedups; one that is too low loses
+    dependencies.
     """
 
-    __slots__ = ("_items", "_last_index", "_barrier")
+    __slots__ = ("_items", "_last_index", "_barriers")
 
     def __init__(self):
         self._items = []
         self._last_index = {}
-        self._barrier = 0
+        self._barriers = []
 
     def append(self, tu):
         last = self._last_index.get(tu)
-        if last is not None and last >= self._barrier:
+        if last is not None and last >= max(self._barriers, default=0):
             return
         self._last_index[tu] = len(self._items)
         self._items.append(tu)
 
-    def set_barrier(self, barrier):
-        """Set the dedup barrier and return the previous barrier."""
-        previous = self._barrier
-        self._barrier = barrier
-        return previous
+    def push_barrier(self, barrier):
+        """Activate a dedup barrier. Barriers form a multiset: the same
+        value may be pushed by several constructs and must be popped once
+        per push."""
+        self._barriers.append(barrier)
+
+    def pop_barrier(self, barrier):
+        """Deactivate one occurrence of an active dedup barrier."""
+        self._barriers.remove(barrier)
 
     def __len__(self):
         return len(self._items)

@@ -12,6 +12,7 @@ from django.test.client import Client, RequestFactory
 from django.test.utils import override_settings
 from django.urls import reverse
 
+from ultracache import clear_recorder
 from ultracache.tests.models import DummyModel, DummyForeignModel, DummyOtherModel
 from ultracache.tests import views
 from ultracache.tests.utils import dummy_proxy
@@ -713,6 +714,53 @@ class DecoratorTestCase(TestCase):
         self.assertTrue("aaa=1" in response.content.decode("utf-8"))
         response = self.client.get(url + "?aaa=2")
         self.assertFalse("aaa=2" in response.content.decode("utf-8"))
+
+
+class NestedCachedGetTestCase(TestCase):
+    """Issue 1 regression: a cached_get-decorated view rendered INSIDE an
+    {% ultracache %} block must not clobber the enclosing block's recorder.
+    Objects accessed by the view must register as dependencies of the outer
+    block so that saving them invalidates the outer block's cache entry."""
+
+    if "django.contrib.sites" in settings.INSTALLED_APPS:
+        fixtures = ["sites.json"]
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        clear_recorder()
+        self.addCleanup(clear_recorder)
+        self.factory = RequestFactory()
+
+    def render(self, path, counter):
+        t = template.Template(
+            "{% load ultracache_tags ultracache_test_tags %}"
+            "{% ultracache 1200 'test_nested_cached_get_outer' %}"
+            "counter = {{ counter }} "
+            "{% render_view 'nested-cached-view' %}"
+            "{% endultracache %}"
+        )
+        request = self.factory.get(path)
+        result = t.render(
+            template.Context({"request": request, "counter": counter})
+        )
+        # Each render simulates a separate request
+        clear_recorder()
+        return result
+
+    def test_outer_block_invalidated_by_object_rendered_in_view(self):
+        one = DummyModel.objects.create(title="One", code="one")
+        result = self.render("/nested-outer-1/", 1)
+        self.assertIn("counter = 1", result)
+        self.assertIn("nested = One", result)
+
+        # The object is rendered only inside the cached_get view. Saving it
+        # must invalidate the OUTER block's cache entry too.
+        one.title = "Onxe"
+        one.save()
+        result = self.render("/nested-outer-2/", 2)
+        self.assertIn("nested = Onxe", result)
+        self.assertIn("counter = 2", result)
 
 
 class RenderViewTestTagTestCase(TestCase):

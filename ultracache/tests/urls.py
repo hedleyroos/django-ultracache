@@ -17,6 +17,11 @@ urlpatterns = [
         r"^bustable-cached-view/$", views.BustableCachedView.as_view(), name="bustable-cached-view"
     ),
     re_path(
+        r"^nested-cached-view/$",
+        views.NestedRenderCachedView.as_view(),
+        name="nested-cached-view",
+    ),
+    re_path(
         r"^non-bustable-cached-view/$",
         views.NonBustableCachedView.as_view(),
         name="non-bustable-cached-view",

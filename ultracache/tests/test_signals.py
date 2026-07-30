@@ -121,6 +121,25 @@ class LazySettingsTestCase(TestCase):
         self.assertFalse(alt_purge_log)
 
 
+class PurgerRuntimeResolutionTestCase(TestCase):
+    """Issue 5: if _get_purger ever hits an unimportable dotted path at
+    runtime it must raise a clear ImproperlyConfigured, not a raw
+    ImportError, and must not memoize the failure away."""
+
+    def test_bad_path_raises_improperly_configured(self):
+        from django.core.exceptions import ImproperlyConfigured
+        from ultracache.signals import _get_purger
+
+        with override_settings(
+            ULTRACACHE={"purge": {"method": "no.such.module.purger"}}
+        ):
+            with self.assertRaises(ImproperlyConfigured):
+                _get_purger()
+            # The failure is not memoized as None: it raises again
+            with self.assertRaises(ImproperlyConfigured):
+                _get_purger()
+
+
 class SignalGuardsTestCase(TestCase):
     """Item 32: the shared guards in _resolve_content_type."""
 

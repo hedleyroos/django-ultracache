@@ -102,16 +102,49 @@ class CachedGetParamTestCase(TestCase):
             with self.assertRaises(ValueError):
                 resolve_legacy_param(param, request)
 
+    def test_underscore_attribute_segments_rejected(self):
+        # Issue 4: attribute segments starting with an underscore must be
+        # rejected to block dunder traversal like
+        # request.__class__.__init__.__globals__.
+        request = self.factory.get("/rejected-underscore/")
+        for param in [
+            "request.__class__",
+            "request.__class__.__init__.__globals__",
+            "request._messages",
+            "request.session._session_key",
+            "request._messages()",
+        ]:
+            with self.assertRaises(ValueError, msg=param):
+                resolve_legacy_param(param, request)
+
+    def test_underscore_param_rejected_at_decoration_time(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with self.assertRaises(ValueError):
+                cached_get(300, "request.__class__.__init__.__globals__")
+
+    def test_invalid_string_param_raises_at_decoration_time(self):
+        # Issue 4: a bad legacy string must fail when the decorator is
+        # constructed (import time), not with a 500 on the first request.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with self.assertRaises(ValueError):
+                cached_get(300, "__import__('os')")
+
     def test_view_with_rejected_string_param(self):
+        # Issue 4 moved the string validation from the first request to
+        # decoration time, so the rejection now happens before a view can
+        # even be decorated. (Adapted accordingly; the pinned behaviour —
+        # an unsupported string parameter raises ValueError — is unchanged
+        # and now surfaces earlier.)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
 
-            @cached_get(300, "__import__('os')")
-            def view(request):
-                return HttpResponse("x")
+            with self.assertRaises(ValueError):
 
-        with self.assertRaises(ValueError):
-            view(self.factory.get("/rejected-view/"))
+                @cached_get(300, "__import__('os')")
+                def view(request):
+                    return HttpResponse("x")
 
 
 class CachedGetHeadersTestCase(TestCase):

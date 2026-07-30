@@ -255,6 +255,13 @@ now prefixed with `ucache3-`. Entries written by 2.x are simply ignored
 after an upgrade — no migration is needed; stale 2.x entries expire on
 their own. Expect a cold cache immediately after upgrading.
 
+Note that template fragments cached by 2.x are stored under Django's own
+`template.cache.*` keys, which 3.0 no longer knows how to invalidate.
+Those fragments persist until their TTL expires, so after upgrading they
+may serve stale content for up to their configured timeout — not just a
+cold cache. If that is unacceptable, flush the cache backend as part of
+the upgrade.
+
 ## Running Tests
 
 ```bash

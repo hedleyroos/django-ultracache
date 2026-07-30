@@ -1,4 +1,6 @@
 import hashlib
+import math
+import time
 from collections import OrderedDict
 
 from django.core.cache import caches
@@ -92,7 +94,15 @@ def cache_meta(recorder, cache_key, start_index=0, request=None, timeout=_timeou
     stored for at least as long as the content: metadata outliving content
     is harmless, but content outliving metadata could never be invalidated.
     A timeout of None means the content never expires, so neither does the
-    metadata."""
+    metadata.
+
+    The shared registry keys (per-object, per-path and per-content-type)
+    store dicts of the form ``{"expires": <unix timestamp or None>,
+    "items": [...]}``. The expiry is embedded in the payload so a later
+    write by a short-timeout block can never LOWER the TTL of a registry
+    key that a longer-lived block also depends on: on every write the new
+    expiry is the max of the existing and the requested one, and ``None``
+    ("never expires") is sticky."""
 
     cache = get_cache()
 
@@ -163,7 +173,8 @@ def cache_meta(recorder, cache_key, start_index=0, request=None, timeout=_timeou
         dict.fromkeys("%sct-pth-%s" % (KEY_PREFIX, ctid) for ctid, obj_pk in recorded)
     )
 
-    # Dictionaries needed for cache.set_many
+    # Dictionaries needed for cache.set_many, mapping each registry key to
+    # its new {"expires": ..., "items": [...]} payload.
     to_set = {}
     to_set_paths = {}
     to_set_content_types = {}
@@ -174,70 +185,82 @@ def cache_meta(recorder, cache_key, start_index=0, request=None, timeout=_timeou
     # A list of objects that contribute to a cache entry
     to_set_objects = recorded
 
+    now = time.time()
+
+    def merged_expires(prev):
+        """A registry key's expiry may only ever move further into the
+        future. None means "never expires" and is sticky."""
+        if meta_timeout is None:
+            return None
+        if prev is not None:
+            prev_expires = prev.get("expires", None)
+            if prev_expires is None:
+                return None
+            return max(prev_expires, now + meta_timeout)
+        return now + meta_timeout
+
     # todo: rewrite to handle absence of get_many
     di = cache.get_many(to_set_get_keys)
     for key in to_set_get_keys:
-        v = di.get(key, None)
+        prev = di.get(key, None)
         keep = []
-        if v is not None:
-            keep, toss = reduce_list_size(v)
+        if prev is not None:
+            keep, toss = reduce_list_size(prev["items"])
             if toss:
-                to_set[key] = keep
                 to_delete.extend(toss)
+        items = keep
         if cache_key not in keep:
-            if key not in to_set:
-                to_set[key] = keep
-            to_set[key] = to_set[key] + [cache_key]
+            items = keep + [cache_key]
+        to_set[key] = {"expires": merged_expires(prev), "items": items}
     if to_set == di:
         to_set = {}
 
     di = cache.get_many(to_set_paths_get_keys)
     for key in to_set_paths_get_keys:
-        v = di.get(key, None)
+        prev = di.get(key, None)
         keep = []
-        if v is not None:
-            keep, toss = reduce_list_size(v)
-            if toss:
-                to_set_paths[key] = keep
-        if path is not None:
-            if [path, headers] not in keep:
-                if key not in to_set_paths:
-                    to_set_paths[key] = keep
-                to_set_paths[key] = to_set_paths[key] + [[path, headers]]
+        if prev is not None:
+            keep, toss = reduce_list_size(prev["items"])
+        items = keep
+        if path is not None and [path, headers] not in keep:
+            items = keep + [[path, headers]]
+        if prev is None and not items:
+            # Nothing stored and nothing to store
+            continue
+        to_set_paths[key] = {"expires": merged_expires(prev), "items": items}
     if to_set_paths == di:
         to_set_paths = {}
 
     di = cache.get_many(to_set_content_types_get_keys)
     for key in to_set_content_types_get_keys:
-        v = di.get(key, None)
+        prev = di.get(key, None)
         keep = []
-        if v is not None:
-            keep, toss = reduce_list_size(v)
+        if prev is not None:
+            keep, toss = reduce_list_size(prev["items"])
             if toss:
-                to_set_content_types[key] = keep
                 to_delete.extend(toss)
+        items = keep
         if cache_key not in keep:
-            if key not in to_set_content_types:
-                to_set_content_types[key] = keep
-            to_set_content_types[key] = to_set_content_types[key] + [cache_key]
+            items = keep + [cache_key]
+        to_set_content_types[key] = {"expires": merged_expires(prev), "items": items}
     if to_set_content_types == di:
         to_set_content_types = {}
 
     di = cache.get_many(to_set_content_types_paths_get_keys)
     for key in to_set_content_types_paths_get_keys:
-        v = di.get(key, None)
+        prev = di.get(key, None)
         keep = []
-        if v is not None:
-            keep, toss = reduce_list_size(v)
-            if toss:
-                to_set_content_types_paths[key] = keep
-        if path is not None:
-            if [path, headers] not in keep:
-                if key not in to_set_content_types_paths:
-                    to_set_content_types_paths[key] = keep
-                to_set_content_types_paths[key] = to_set_content_types_paths[key] + [
-                    [path, headers]
-                ]
+        if prev is not None:
+            keep, toss = reduce_list_size(prev["items"])
+        items = keep
+        if path is not None and [path, headers] not in keep:
+            items = keep + [[path, headers]]
+        if prev is None and not items:
+            continue
+        to_set_content_types_paths[key] = {
+            "expires": merged_expires(prev),
+            "items": items,
+        }
     if to_set_content_types_paths == di:
         to_set_content_types_paths = {}
 
@@ -249,7 +272,6 @@ def cache_meta(recorder, cache_key, start_index=0, request=None, timeout=_timeou
             for k in to_delete:
                 cache.delete(k)
 
-    # Do one set_many
     di = {}
     di.update(to_set)
     del to_set
@@ -260,15 +282,26 @@ def cache_meta(recorder, cache_key, start_index=0, request=None, timeout=_timeou
     di.update(to_set_content_types_paths)
     del to_set_content_types_paths
 
-    if to_set_objects:
-        di[cache_key + "-objs"] = to_set_objects
+    # Group the writes by TTL: each registry key's TTL is derived from its
+    # own merged expiry, so a key whose existing expiry lies further in the
+    # future than this block's requested one keeps its longer lifetime.
+    groups = {}
+    for key, payload in di.items():
+        expires = payload["expires"]
+        ttl = None if expires is None else math.ceil(expires - now)
+        groups.setdefault(ttl, {})[key] = payload
 
-    if di:
+    if to_set_objects:
+        # The per-entry object list is rewritten wholesale together with
+        # its content entry, so it just uses this write's metadata timeout.
+        groups.setdefault(meta_timeout, {})[cache_key + "-objs"] = to_set_objects
+
+    for ttl, batch in groups.items():
         try:
-            cache.set_many(di, meta_timeout)
+            cache.set_many(batch, ttl)
         except NotImplementedError:
-            for k, v in di.items():
-                cache.set(k, v, meta_timeout)
+            for k, v in batch.items():
+                cache.set(k, v, ttl)
 
 
 def get_current_site_pk(request):
@@ -288,7 +321,17 @@ empty_marker_2 = EmptyMarker()
 
 
 class Ultracache:
-    """Cache arbitrary pieces of Python code."""
+    """Cache arbitrary pieces of Python code.
+
+    Construction pushes a dedup barrier at the object's start index so that
+    objects recorded earlier in the request are recorded again when
+    re-accessed during this object's compute — even if that compute happens
+    after an enclosing caching block (e.g. a template tag) has exited. The
+    barrier is popped when ``cache()`` is called or when a cache hit is
+    detected. An abandoned Ultracache (never checked, never cached) leaves
+    its barrier active for the rest of the request; that is the SAFE
+    direction — it only causes harmless re-records — and it is cleared
+    together with the recorder at request end."""
 
     def __init__(self, timeout, name, *params, request=None):
         self.timeout = timeout
@@ -300,17 +343,24 @@ class Ultracache:
         self.recorder = get_or_create_recorder()
         self.start_index = len(self.recorder)
         # Objects recorded before this point must be recorded again so they
-        # land in this block's slice of the recorder. There is no reliable
-        # "end of block" hook on the cache-hit path so the barrier is not
-        # restored; a stale high barrier is harmless because every caching
-        # block raises the barrier to its own start index.
-        self.recorder.set_barrier(self.start_index)
+        # land in this block's slice of the recorder.
+        self.recorder.push_barrier(self.start_index)
+        self._barrier_active = True
         self.used = False
+
+    def _release_barrier(self):
+        if self._barrier_active:
+            self.recorder.pop_barrier(self.start_index)
+            self._barrier_active = False
 
     @property
     def cached(self):
         if self._cached is empty_marker_1:
             self._cached = get_cache().get(self.cache_key, empty_marker_2)
+        if self._cached is not empty_marker_2:
+            # Cache hit: no compute will happen, the barrier is not needed
+            # anymore.
+            self._release_barrier()
         return self._cached
 
     def __bool__(self):
@@ -328,3 +378,4 @@ class Ultracache:
             timeout=self.timeout,
         )
         self.used = True
+        self._release_barrier()

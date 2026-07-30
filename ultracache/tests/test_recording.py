@@ -54,17 +54,53 @@ class RecorderTestCase(SimpleTestCase):
     def test_barrier_allows_re_recording_for_new_block(self):
         # An entry recorded before a block starts must be recorded again
         # inside the block so it appears in the block's [start_index:] slice.
+        # (Adapted from the set_barrier API to push_barrier/pop_barrier for
+        # issue 3; the pinned behaviour — dedup within a block, re-record
+        # for a new block — is unchanged.)
         recorder = Recorder()
         recorder.append((1, 1))
         start_index = len(recorder)
-        old_barrier = recorder.set_barrier(start_index)
-        self.assertEqual(old_barrier, 0)
+        recorder.push_barrier(start_index)
         recorder.append((1, 1))
         self.assertEqual(recorder[start_index:], [(1, 1)])
         # Within the block the entry still dedups
         recorder.append((1, 1))
         self.assertEqual(recorder[start_index:], [(1, 1)])
-        recorder.set_barrier(old_barrier)
+        recorder.pop_barrier(start_index)
+
+
+class BarrierStackTestCase(SimpleTestCase):
+    """Issue 3: the effective dedup barrier must be the MAX of all active
+    caching constructs' start indexes, so a construct that outlives the
+    block it was created in (deferred compute) keeps its barrier active."""
+
+    def test_effective_barrier_is_max_of_active_barriers(self):
+        recorder = Recorder()
+        recorder.append((1, 1))  # index 0
+        recorder.push_barrier(1)  # outer block starts at 1
+        recorder.append((1, 1))  # re-recorded at index 1
+        recorder.push_barrier(2)  # deferred construct starts at 2
+        # The outer block exits first; the deferred construct's barrier
+        # must remain in effect.
+        recorder.pop_barrier(1)
+        recorder.append((1, 1))  # last index 1 < effective barrier 2
+        self.assertEqual(recorder[2:], [(1, 1)])
+        recorder.pop_barrier(2)
+        # All barriers popped: the entry dedups again
+        recorder.append((1, 1))
+        self.assertEqual(len(recorder), 3)
+
+    def test_duplicate_barrier_values_are_counted(self):
+        # Two constructs may share the same start index; popping one must
+        # not deactivate the other.
+        recorder = Recorder()
+        recorder.append((1, 1))
+        recorder.push_barrier(1)
+        recorder.push_barrier(1)
+        recorder.pop_barrier(1)
+        recorder.append((1, 1))  # still re-records: one barrier at 1 remains
+        self.assertEqual(recorder[1:], [(1, 1)])
+        recorder.pop_barrier(1)
 
 
 class RecordingTestCase(TestCase):

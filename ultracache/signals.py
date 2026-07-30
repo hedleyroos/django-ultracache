@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ImproperlyConfigured
 from django.core.signals import request_finished, setting_changed
 from django.db.migrations.recorder import MigrationRecorder
 from django.db.models import Model
@@ -21,11 +22,21 @@ _settings_memo = {}
 def _get_purger():
     if "purger" not in _settings_memo:
         try:
-            _settings_memo["purger"] = import_string(
-                settings.ULTRACACHE["purge"]["method"]
-            )
+            method = settings.ULTRACACHE["purge"]["method"]
         except (AttributeError, KeyError):
             _settings_memo["purger"] = None
+            return None
+        try:
+            _settings_memo["purger"] = import_string(method)
+        except ImportError as error:
+            # check_purger() in apps.py validates the configured purger at
+            # startup; this can still trigger when the setting is changed
+            # at runtime (eg. override_settings). Raise without memoizing
+            # so a corrected setting recovers.
+            raise ImproperlyConfigured(
+                "ULTRACACHE['purge']['method'] = %r cannot be imported"
+                % method
+            ) from error
     return _settings_memo["purger"]
 
 
@@ -79,8 +90,10 @@ def _invalidate(keys_key, purge_key):
     reverse caching proxy paths registered under purge_key."""
     cache = get_cache()
 
-    # Expire cache keys
-    to_delete = cache.get(keys_key, [])
+    # Expire cache keys. Registry values are {"expires": ..., "items": [...]}
+    # payloads (see utils.cache_meta).
+    payload = cache.get(keys_key)
+    to_delete = payload["items"] if payload else []
     if to_delete:
         try:
             cache.delete_many(to_delete)
@@ -93,9 +106,9 @@ def _invalidate(keys_key, purge_key):
     purger = _get_purger()
     if purger is not None:
         # The key *must* be deleted first in case the purger fails
-        items = cache.get(purge_key, [])
+        payload = cache.get(purge_key)
         cache.delete(purge_key)
-        for li in items:
+        for li in (payload["items"] if payload else []):
             purger(li[0], li[1])
     else:
         cache.delete(purge_key)

@@ -71,7 +71,7 @@ class UltraCacheNode(CacheNode):
         # Within this block a distinct object only needs to be recorded once,
         # but an object recorded before the block started must be recorded
         # again so it lands in this block's slice of the recorder.
-        old_barrier = recorder.set_barrier(start_index)
+        recorder.push_barrier(start_index)
         try:
             cache = get_cache()
             value = cache.get(cache_key)
@@ -91,7 +91,7 @@ class UltraCacheNode(CacheNode):
                 for tu in cache.get(cache_key + "-objs", []):
                     recorder.append(tu)
         finally:
-            recorder.set_barrier(old_barrier)
+            recorder.pop_barrier(start_index)
 
         return value
 

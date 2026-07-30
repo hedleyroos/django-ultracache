@@ -1,6 +1,23 @@
 from django.apps import AppConfig
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.utils.module_loading import import_string
+
+
+def check_purger():
+    """Resolve the configured purger once at startup so a mistyped dotted
+    path fails the deployment immediately instead of raising inside the
+    first model save."""
+    try:
+        method = settings.ULTRACACHE["purge"]["method"]
+    except (AttributeError, KeyError):
+        return
+    try:
+        import_string(method)
+    except ImportError as error:
+        raise ImproperlyConfigured(
+            "ULTRACACHE['purge']['method'] = %r cannot be imported" % method
+        ) from error
 
 
 def check_request_context_processor():
@@ -21,5 +38,6 @@ class UltracacheAppConfig(AppConfig):
 
     def ready(self):
         check_request_context_processor()
+        check_purger()
         from ultracache import signals
         import ultracache.monkey

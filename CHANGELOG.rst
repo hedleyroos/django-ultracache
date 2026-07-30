@@ -24,10 +24,18 @@ Crashers and correctness
    correctly when even the smallest tail is too large.
 #. ``post_delete`` with a configured purger now deletes the path registry key,
    preventing endless re-purging of stale paths.
-#. ``eval()`` removed from ``cached_get``: pass callables
-   (``cached_get(300, lambda request: request.is_secure())``); legacy string
-   parameters go through a restricted request-scoped resolver and emit a
-   ``DeprecationWarning``.
+#. ``eval()`` removed from ``cached_get``: callables are the replacement
+   (``cached_get(300, lambda request: request.is_secure())``). Legacy string
+   parameters are restricted to dotted attribute traversal of the request
+   (optionally with a trailing no-argument call, no underscore-prefixed
+   segments), go through a request-scoped resolver and emit a
+   ``DeprecationWarning``. **Breaking**: unsupported strings now raise
+   ``ValueError`` at decoration time instead of evaluating arbitrary code
+   per request.
+#. ``ContentType`` instances are no longer recorded as dependencies of
+   caching blocks: their rows are effectively immutable at runtime, and
+   recording them from within the ``Model.__getattribute__`` patch would
+   recurse.
 
 Performance
 ~~~~~~~~~~~
@@ -50,8 +58,12 @@ Robustness and design
 ~~~~~~~~~~~~~~~~~~~~~
 
 #. Invalidation metadata is stored for at least as long as the content it
-   invalidates (``max(timeout, 86400)``; a ``None`` timeout propagates), so
-   long-lived content can no longer outlive its invalidation metadata.
+   invalidates (``max(timeout, 86400)``; a ``None`` timeout propagates), and
+   a registry key's TTL never decreases: the expiry is embedded in the
+   stored payload and later writes only ever extend it, so a short-timeout
+   block touching the same object cannot cut a longer-lived block off from
+   invalidation. Long-lived content can no longer outlive its invalidation
+   metadata.
 #. The ``purge`` and ``invalidate`` settings are resolved lazily and respect
    ``override_settings`` / runtime reconfiguration.
 #. Purge failures are logged (path, target URL, exception) instead of being
@@ -76,7 +88,7 @@ Cleanup, async, packaging
    and async-capable under ASGI.
 #. Packaging migrated from ``setup.py`` to ``pyproject.toml`` with declared
    dependencies and a ``broadcast`` extra (``celery``, ``pika>=1.0``).
-#. Test suite grew from 9 to 123 tests; ``ultracache/`` (excluding tests) is
+#. Test suite grew from 9 to 138 tests; ``ultracache/`` (excluding tests) is
    at 100% line coverage.
 
 2.3
