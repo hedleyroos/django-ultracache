@@ -1,12 +1,15 @@
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.core.cache import cache
+from django.core.signals import request_finished
 from django.db.migrations.recorder import MigrationRecorder
 from django.db.models import Model
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 
 from django.utils.module_loading import import_string
+
+from ultracache import clear_recorder
 
 try:
     purger = import_string(settings.ULTRACACHE["purge"]["method"])
@@ -17,6 +20,14 @@ try:
     invalidate = settings.ULTRACACHE["invalidate"]
 except (AttributeError, KeyError):
     invalidate = True
+
+
+@receiver(request_finished, dispatch_uid="ultracache.request_finished")
+def on_request_finished(sender, **kwargs):
+    """Safety net for deployments that do not install UltraCacheMiddleware:
+    without cleanup a lazily created recorder would leak between requests
+    served by the same worker thread under WSGI."""
+    clear_recorder()
 
 
 @receiver(post_save)

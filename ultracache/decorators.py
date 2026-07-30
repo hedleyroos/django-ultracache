@@ -8,7 +8,7 @@ from django.core.cache import cache
 from django.http import HttpResponse
 from django.template.response import TemplateResponse
 
-from ultracache import _thread_locals
+from ultracache import Recorder, set_recorder
 from ultracache.utils import cache_meta, get_current_site_pk
 
 
@@ -119,8 +119,10 @@ def cached_get(timeout, *params):
             cache_key = "ucache-%s" % hashed
             cached = cache.get(cache_key, None)
             if cached is None:
-                # The get view as outermost caller may bluntly set recorder to empty
-                _thread_locals.ultracache_recorder = []
+                # The get view as outermost caller may bluntly install a
+                # fresh recorder
+                recorder = Recorder()
+                set_recorder(recorder)
                 response = view_func(view_or_request, *args, **kwargs)
                 content = None
                 if isinstance(response, TemplateResponse):
@@ -134,7 +136,7 @@ def cached_get(timeout, *params):
                     else:
                         headers = getattr(response, "_headers", {})
                     cache.set(cache_key, {"content": content, "headers": headers}, timeout)
-                    cache_meta(_thread_locals.ultracache_recorder, cache_key, request=request)
+                    cache_meta(recorder, cache_key, request=request)
             else:
                 response = HttpResponse(cached["content"])
                 # Headers has a non-obvious format

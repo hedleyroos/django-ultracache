@@ -1,36 +1,76 @@
 from contextvars import ContextVar
 
 
-class ContextVarsLocal:
+class Recorder:
+    """Records ``(content_type_id, pk)`` tuples in insertion order,
+    deduplicating on insert.
+
+    Consumers (the template tag, ``cached_get`` and ``Ultracache``) snapshot
+    ``len(recorder)`` when a caching block starts and later read
+    ``recorder[start_index:]``. A tuple is only skipped when it has already
+    been recorded at or after the current dedup *barrier* — the start index
+    of the innermost active caching block. A tuple recorded before the
+    barrier is recorded again so that it still lands in the active block's
+    slice; enclosing blocks may then see it more than once, which
+    ``cache_meta`` deduplicates cheaply.
+    """
+
+    __slots__ = ("_items", "_last_index", "_barrier")
+
     def __init__(self):
-        self._storage = ContextVar("ultracache_storage", default={})
+        self._items = []
+        self._last_index = {}
+        self._barrier = 0
 
-    def __getattr__(self, name):
-        storage = self._storage.get()
-        try:
-            return storage[name]
-        except KeyError:
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-
-    def __setattr__(self, name, value):
-        if name == "_storage":
-            super().__setattr__(name, value)
+    def append(self, tu):
+        last = self._last_index.get(tu)
+        if last is not None and last >= self._barrier:
             return
-        
-        # We need to copy the storage to ensure isolation between contexts
-        storage = self._storage.get().copy()
-        storage[name] = value
-        self._storage.set(storage)
+        self._last_index[tu] = len(self._items)
+        self._items.append(tu)
 
-    def __delattr__(self, name):
-        storage = self._storage.get()
-        if name in storage:
-            # We need to copy the storage to ensure isolation between contexts
-            new_storage = storage.copy()
-            del new_storage[name]
-            self._storage.set(new_storage)
-        else:
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+    def set_barrier(self, barrier):
+        """Set the dedup barrier and return the previous barrier."""
+        previous = self._barrier
+        self._barrier = barrier
+        return previous
+
+    def __len__(self):
+        return len(self._items)
+
+    def __getitem__(self, index):
+        return self._items[index]
+
+    def __iter__(self):
+        return iter(self._items)
 
 
-_thread_locals = ContextVarsLocal()
+# The recorder for the current thread / async context. ``None`` means
+# recording is inactive, which is the common case and must stay cheap: the
+# guard in the ``Model.__getattribute__`` patch is a single ``.get()``.
+_recorder: ContextVar = ContextVar("ultracache_recorder", default=None)
+
+
+def get_recorder():
+    """Return the recorder for the current context, or None if recording is
+    inactive."""
+    return _recorder.get()
+
+
+def get_or_create_recorder():
+    """Return the recorder for the current context, creating it lazily."""
+    recorder = _recorder.get()
+    if recorder is None:
+        recorder = Recorder()
+        _recorder.set(recorder)
+    return recorder
+
+
+def set_recorder(recorder):
+    """Install ``recorder`` as the recorder for the current context."""
+    _recorder.set(recorder)
+
+
+def clear_recorder():
+    """Deactivate recording for the current context."""
+    _recorder.set(None)

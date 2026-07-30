@@ -1,21 +1,18 @@
-from ultracache import _thread_locals
-
-
-def _cleanup():
-    if hasattr(_thread_locals, "ultracache_recorder"):
-        delattr(_thread_locals, "ultracache_recorder")
-    if hasattr(_thread_locals, "_ultracache_attr_marker"):
-        delattr(_thread_locals, "_ultracache_attr_marker")
+from ultracache import clear_recorder
 
 
 class UltraCacheMiddleware:
-    """Middleware to ensure thread locals is cleaned up."""
+    """Clear the recorder state for the current context after each request.
+
+    Installing this middleware is recommended. It is not strictly required:
+    a ``request_finished`` receiver in ``ultracache.signals`` performs the
+    same cleanup as a safety net for deployments that omit it.
+    """
 
     def __init__(self, get_response=None):
         self.get_response = get_response
 
     def __call__(self, request):
-        response = self.process_request(request)
         try:
             response = self.get_response(request)
         except Exception as e:
@@ -23,12 +20,9 @@ class UltraCacheMiddleware:
             raise
         return self.process_response(request, response)
 
-    def process_request(self, request):
-        pass
-
     def process_response(self, request, response):
-        _cleanup()
+        clear_recorder()
         return response
 
     def process_exception(self, request, exception):
-        _cleanup()
+        clear_recorder()

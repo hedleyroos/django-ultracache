@@ -9,7 +9,7 @@ from django.core.cache import cache
 from django.core.cache.utils import make_template_fragment_key
 from django.conf import settings
 
-from ultracache import _thread_locals
+from ultracache import get_or_create_recorder
 from ultracache.utils import cache_meta, get_current_site_pk
 
 
@@ -46,14 +46,12 @@ class UltraCacheNode(CacheNode):
         if request.method.lower() not in ("get", "head"):
             return self.nodelist.render(context)
 
-        # Set a list on the request. Django's template rendering is recursive
-        # and single threaded so we can use a list to keep track of contained
+        # Lazily create the recorder for this context. Django's template
+        # rendering is recursive and runs in a single context so an
+        # insertion-ordered recorder is enough to keep track of contained
         # objects.
-        if not hasattr(_thread_locals, "ultracache_recorder"):
-            setattr(_thread_locals, "ultracache_recorder", [])
-            start_index = 0
-        else:
-            start_index = len(_thread_locals.ultracache_recorder)
+        recorder = get_or_create_recorder()
+        start_index = len(recorder)
 
         vary_on = []
         if "django.contrib.sites" in settings.INSTALLED_APPS:
@@ -71,16 +69,23 @@ class UltraCacheNode(CacheNode):
             vary_on.append(r)
 
         cache_key = make_template_fragment_key(self.fragment_name, vary_on)
-        value = cache.get(cache_key)
-        if value is None:
-            value = self.nodelist.render(context)
-            cache.set(cache_key, value, expire_time)
-            cache_meta(_thread_locals.ultracache_recorder, cache_key, start_index, request=request)
-        else:
-            # A cached result was found. Set tuples in _ultracache manually so
-            # outer template tags are aware of contained objects.
-            for tu in cache.get(cache_key + "-objs", []):
-                _thread_locals.ultracache_recorder.append(tu)
+        # Within this block a distinct object only needs to be recorded once,
+        # but an object recorded before the block started must be recorded
+        # again so it lands in this block's slice of the recorder.
+        old_barrier = recorder.set_barrier(start_index)
+        try:
+            value = cache.get(cache_key)
+            if value is None:
+                value = self.nodelist.render(context)
+                cache.set(cache_key, value, expire_time)
+                cache_meta(recorder, cache_key, start_index, request=request)
+            else:
+                # A cached result was found. Replay the recorded tuples so
+                # outer template tags are aware of contained objects.
+                for tu in cache.get(cache_key + "-objs", []):
+                    recorder.append(tu)
+        finally:
+            recorder.set_barrier(old_barrier)
 
         return value
 

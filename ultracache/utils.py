@@ -5,7 +5,7 @@ from django.core.cache import cache
 from django.conf import settings
 from django.http.cookie import SimpleCookie
 
-from ultracache import _thread_locals
+from ultracache import get_or_create_recorder
 
 
 # The metadata itself can't be allowed to grow endlessly. This value is the
@@ -87,11 +87,37 @@ def cache_meta(recorder, cache_key, start_index=0, request=None):
                 if k in CONSIDER_HEADERS:
                     headers[k] = v
 
-    # Lists needed for cache.get_many
-    to_set_get_keys = []
-    to_set_paths_get_keys = []
-    to_set_content_types_get_keys = []
-    to_set_content_types_paths_get_keys = []
+    # The recorder dedups on insert per caching block but may still contain
+    # cross-block repeats. Dedup the slice once, preserving insertion order.
+    recorded = list(dict.fromkeys(recorder[start_index:]))
+
+    # Key lists needed for cache.get_many, deduplicated while preserving
+    # order. dict.fromkeys avoids the quadratic list membership scans.
+
+    # The object appears in these cache entries. If the object is modified
+    # then these cache entries are deleted.
+    to_set_get_keys = list(
+        dict.fromkeys("ucache-%s-%s" % (ctid, obj_pk) for ctid, obj_pk in recorded)
+    )
+
+    # The object appears in these paths. If the object is modified then any
+    # caches that are read from when browsing to this path are cleared.
+    to_set_paths_get_keys = list(
+        dict.fromkeys("ucache-pth-%s-%s" % (ctid, obj_pk) for ctid, obj_pk in recorded)
+    )
+
+    # The content type appears in these cache entries. If an object of this
+    # content type is created then these cache entries are cleared.
+    to_set_content_types_get_keys = list(
+        dict.fromkeys("ucache-ct-%s" % ctid for ctid, obj_pk in recorded)
+    )
+
+    # The content type appears in these paths. If an object of this content
+    # type is created then any caches that are read from when browsing to
+    # this path are cleared.
+    to_set_content_types_paths_get_keys = list(
+        dict.fromkeys("ucache-ct-pth-%s" % ctid for ctid, obj_pk in recorded)
+    )
 
     # Dictionaries needed for cache.set_many
     to_set = {}
@@ -100,38 +126,9 @@ def cache_meta(recorder, cache_key, start_index=0, request=None):
     to_set_content_types_paths = {}
 
     to_delete = []
-    to_set_objects = []
 
-    for ctid, obj_pk in recorder[start_index:]:
-        # The object appears in these cache entries. If the object is modified
-        # then these cache entries are deleted.
-        key = "ucache-%s-%s" % (ctid, obj_pk)
-        if key not in to_set_get_keys:
-            to_set_get_keys.append(key)
-
-        # The object appears in these paths. If the object is modified then any
-        # caches that are read from when browsing to this path are cleared.
-        key = "ucache-pth-%s-%s" % (ctid, obj_pk)
-        if key not in to_set_paths_get_keys:
-            to_set_paths_get_keys.append(key)
-
-        # The content type appears in these cache entries. If an object of this
-        # content type is created then these cache entries are cleared.
-        key = "ucache-ct-%s" % ctid
-        if key not in to_set_content_types_get_keys:
-            to_set_content_types_get_keys.append(key)
-
-        # The content type appears in these paths. If an object of this content
-        # type is created then any caches that are read from when browsing to
-        # this path are cleared.
-        key = "ucache-ct-pth-%s" % ctid
-        if key not in to_set_content_types_paths_get_keys:
-            to_set_content_types_paths_get_keys.append(key)
-
-        # A list of objects that contribute to a cache entry
-        tu = (ctid, obj_pk)
-        if tu not in to_set_objects:
-            to_set_objects.append(tu)
+    # A list of objects that contribute to a cache entry
+    to_set_objects = recorded
 
     # todo: rewrite to handle absence of get_many
     di = cache.get_many(to_set_get_keys)
@@ -256,9 +253,14 @@ class Ultracache:
         s = ":".join([name] + [str(p) for p in params])
         hashed = hashlib.md5(s.encode("utf-8")).hexdigest()
         self.cache_key = "ucache-%s" % hashed
-        if not hasattr(_thread_locals, "ultracache_recorder"):
-            setattr(_thread_locals, "ultracache_recorder", [])
-        self.start_index = len(_thread_locals.ultracache_recorder)
+        self.recorder = get_or_create_recorder()
+        self.start_index = len(self.recorder)
+        # Objects recorded before this point must be recorded again so they
+        # land in this block's slice of the recorder. There is no reliable
+        # "end of block" hook on the cache-hit path so the barrier is not
+        # restored; a stale high barrier is harmless because every caching
+        # block raises the barrier to its own start index.
+        self.recorder.set_barrier(self.start_index)
         self.used = False
 
     @property
@@ -275,7 +277,7 @@ class Ultracache:
             raise RuntimeError("The cache method may only be called once per Ultracache object.")
         cache.set(self.cache_key, value, self.timeout)
         cache_meta(
-            _thread_locals.ultracache_recorder,
+            self.recorder,
             self.cache_key,
             start_index=self.start_index,
             request=self.request,
