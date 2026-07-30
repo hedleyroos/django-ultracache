@@ -1,6 +1,84 @@
 Changelog
 =========
 
+3.0
+---
+
+Requires Django >= 4.1 on Python >= 3.11. **Cache format bump**: every key
+ultracache writes is now prefixed ``ucache3-``, because 3.0 changed the shape
+of cached payloads (public header mapping in ``cached_get``). Entries written
+by 2.x are ignored after an upgrade — expect a cold cache; stale 2.x entries
+expire on their own.
+
+Crashers and correctness
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+#. The varnish and nginx purgers work with the documented settings shape
+   (``method`` dotted-path string with a sibling ``url`` key); previously they
+   crashed on every invocation.
+#. Template tag error paths raise ``TemplateSyntaxError`` with a proper
+   message instead of ``NameError``/``TypeError``.
+#. An unresolvable vary-on variable contributes a stable placeholder to the
+   cache key instead of corrupting it (or crashing when first).
+#. ``reduce_list_size`` no longer crashes on integer division and clamps
+   correctly when even the smallest tail is too large.
+#. ``post_delete`` with a configured purger now deletes the path registry key,
+   preventing endless re-purging of stale paths.
+#. ``eval()`` removed from ``cached_get``: pass callables
+   (``cached_get(300, lambda request: request.is_secure())``); legacy string
+   parameters go through a restricted request-scoped resolver and emit a
+   ``DeprecationWarning``.
+
+Performance
+~~~~~~~~~~~
+
+#. The ``Model.__getattribute__`` recording hot path was reworked: the
+   reentrancy marker is gone (the pk is read without recursion), recording
+   state lives in a dedicated ``ContextVar``, the recorder deduplicates on
+   insert, and ``cache_meta`` no longer does quadratic membership scans.
+#. Micro-benchmark (``bin/benchmark.py``, 5 runs of 100,000 iterations of 4
+   attribute accesses, Python 3.12/Django 6.0): patched-with-recording-inactive
+   dropped from 0.588s to 0.070s (~8x faster) and patched-with-recording-active
+   from 3.086s to 0.662s (~4.7x faster; the old number was additionally
+   inflated by profiling instrumentation). Unpatched baseline is ~0.012s.
+   Note: the pre-3.0 benchmark's "baseline" was itself the patched function,
+   so historical comparisons should use the numbers above.
+#. The recorder is created lazily by the first caching construct instead of on
+   every request.
+
+Robustness and design
+~~~~~~~~~~~~~~~~~~~~~
+
+#. Invalidation metadata is stored for at least as long as the content it
+   invalidates (``max(timeout, 86400)``; a ``None`` timeout propagates), so
+   long-lived content can no longer outlive its invalidation metadata.
+#. The ``purge`` and ``invalidate`` settings are resolved lazily and respect
+   ``override_settings`` / runtime reconfiguration.
+#. Purge failures are logged (path, target URL, exception) instead of being
+   silently swallowed.
+#. ``cached_get`` stores response headers via the public mapping API.
+#. The ``ultracache`` class decorator preserves ``__name__``, ``__qualname__``,
+   ``__module__`` and ``__doc__``.
+#. The documented ``cache_alias`` setting is now actually implemented.
+#. ``broadcast_purge`` retries on AMQP errors with exponential backoff and
+   supports pika 1.x.
+#. MD5 cache-key hashing passes ``usedforsecurity=False`` for FIPS
+   environments.
+
+Cleanup, async, packaging
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+#. Removed the dead ``Variable._resolve_lookup`` patch, Python 2 / old-Django
+   compatibility fallbacks, and ``models.py`` (startup checks moved to
+   ``AppConfig.ready()``, raising ``ImproperlyConfigured``).
+#. ``UltraCacheMiddleware`` is now recommended rather than required (a
+   ``request_finished`` receiver cleans up as a safety net) and is both sync-
+   and async-capable under ASGI.
+#. Packaging migrated from ``setup.py`` to ``pyproject.toml`` with declared
+   dependencies and a ``broadcast`` extra (``celery``, ``pika>=1.0``).
+#. Test suite grew from 9 to 123 tests; ``ultracache/`` (excluding tests) is
+   at 100% line coverage.
+
 2.3
 ---
 
