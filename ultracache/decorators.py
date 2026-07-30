@@ -4,12 +4,11 @@ import warnings
 from functools import wraps, WRAPPER_ASSIGNMENTS, partial
 
 from django.conf import settings
-from django.core.cache import cache
 from django.http import HttpResponse
 from django.template.response import TemplateResponse
 
 from ultracache import Recorder, set_recorder
-from ultracache.utils import cache_meta, get_current_site_pk
+from ultracache.utils import KEY_PREFIX, cache_meta, get_cache, get_current_site_pk
 
 
 # Legacy string parameters may only be dotted attribute traversal rooted in
@@ -115,8 +114,9 @@ def cached_get(timeout, *params):
                     li.append(param)
 
             s = ":".join([str(l) for l in li])
-            hashed = hashlib.md5(s.encode("utf-8")).hexdigest()
-            cache_key = "ucache-%s" % hashed
+            hashed = hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()
+            cache_key = KEY_PREFIX + hashed
+            cache = get_cache()
             cached = cache.get(cache_key, None)
             if cached is None:
                 # The get view as outermost caller may bluntly install a
@@ -130,18 +130,14 @@ def cached_get(timeout, *params):
                 elif isinstance(response, HttpResponse):
                     content = response.content
                 if content is not None:
-                    # Django 4 deprecates _headers and introduces headers. Drop to private API for compatibility.
-                    if hasattr(response, "headers"):
-                        headers = response.headers._store
-                    else:
-                        headers = getattr(response, "_headers", {})
+                    # Store the headers via the public mapping API
+                    headers = dict(response.headers)
                     cache.set(cache_key, {"content": content, "headers": headers}, timeout)
-                    cache_meta(recorder, cache_key, request=request)
+                    cache_meta(recorder, cache_key, request=request, timeout=timeout)
             else:
                 response = HttpResponse(cached["content"])
-                # Headers has a non-obvious format
                 for k, v in cached["headers"].items():
-                    response[v[0]] = v[1]
+                    response[k] = v
 
             return response
 
@@ -156,13 +152,15 @@ def ultracache(timeout, *params):
 
     def decorator(cls):
         class WrappedClass(cls):
-            def __init__(self, *args, **kwargs):
-                super(WrappedClass, self).__init__(*args, **kwargs)
-
             @cached_get(timeout, *params)
             def get(self, *args, **kwargs):
                 return super(WrappedClass, self).get(*args, **kwargs)
 
+        # Preserve the wrapped class's introspection metadata
+        WrappedClass.__name__ = cls.__name__
+        WrappedClass.__qualname__ = cls.__qualname__
+        WrappedClass.__module__ = cls.__module__
+        WrappedClass.__doc__ = cls.__doc__
         return WrappedClass
 
     return decorator

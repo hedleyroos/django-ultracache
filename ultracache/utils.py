@@ -1,11 +1,36 @@
 import hashlib
 from collections import OrderedDict
 
-from django.core.cache import cache
+from django.core.cache import caches
 from django.conf import settings
 from django.http.cookie import SimpleCookie
 
 from ultracache import get_or_create_recorder
+
+
+# Prefix for every key ultracache stores in the cache backend. The "3" is a
+# cache format version: 3.0 changed the shape of cached payloads (public
+# header mapping in cached_get), so entries written by 2.x must be ignored
+# rather than mis-parsed after an upgrade.
+KEY_PREFIX = "ucache3-"
+
+# Historic default lifetime of the invalidation metadata. Metadata is never
+# stored for less time than the content it invalidates (see cache_meta).
+METADATA_TIMEOUT = 86400
+
+# Sentinel distinguishing "timeout not passed" from an explicit None
+# (Django's "cache forever").
+_timeout_unset = object()
+
+
+def get_cache():
+    """Return the cache backend ultracache stores its data in.
+
+    Defaults to the "default" alias and can be pointed at another backend
+    with the ULTRACACHE["cache_alias"] setting. Resolved on every call so
+    override_settings and runtime reconfiguration are respected."""
+    ultracache_settings = getattr(settings, "ULTRACACHE", None) or {}
+    return caches[ultracache_settings.get("cache_alias", "default")]
 
 
 # The metadata itself can't be allowed to grow endlessly. This value is the
@@ -59,9 +84,24 @@ def reduce_list_size(li):
     return keep, toss
 
 
-def cache_meta(recorder, cache_key, start_index=0, request=None):
-    """Inspect request for objects in _ultracache and set appropriate entries
-    in Django's cache."""
+def cache_meta(recorder, cache_key, start_index=0, request=None, timeout=_timeout_unset):
+    """Set the invalidation metadata entries for the objects recorded for
+    cache_key.
+
+    ``timeout`` is the timeout of the content entry itself. The metadata is
+    stored for at least as long as the content: metadata outliving content
+    is harmless, but content outliving metadata could never be invalidated.
+    A timeout of None means the content never expires, so neither does the
+    metadata."""
+
+    cache = get_cache()
+
+    if timeout is _timeout_unset:
+        meta_timeout = METADATA_TIMEOUT
+    elif timeout is None:
+        meta_timeout = None
+    else:
+        meta_timeout = max(timeout, METADATA_TIMEOUT)
 
     path = None
     if request is not None:
@@ -97,26 +137,30 @@ def cache_meta(recorder, cache_key, start_index=0, request=None):
     # The object appears in these cache entries. If the object is modified
     # then these cache entries are deleted.
     to_set_get_keys = list(
-        dict.fromkeys("ucache-%s-%s" % (ctid, obj_pk) for ctid, obj_pk in recorded)
+        dict.fromkeys(
+            "%s%s-%s" % (KEY_PREFIX, ctid, obj_pk) for ctid, obj_pk in recorded
+        )
     )
 
     # The object appears in these paths. If the object is modified then any
     # caches that are read from when browsing to this path are cleared.
     to_set_paths_get_keys = list(
-        dict.fromkeys("ucache-pth-%s-%s" % (ctid, obj_pk) for ctid, obj_pk in recorded)
+        dict.fromkeys(
+            "%spth-%s-%s" % (KEY_PREFIX, ctid, obj_pk) for ctid, obj_pk in recorded
+        )
     )
 
     # The content type appears in these cache entries. If an object of this
     # content type is created then these cache entries are cleared.
     to_set_content_types_get_keys = list(
-        dict.fromkeys("ucache-ct-%s" % ctid for ctid, obj_pk in recorded)
+        dict.fromkeys("%sct-%s" % (KEY_PREFIX, ctid) for ctid, obj_pk in recorded)
     )
 
     # The content type appears in these paths. If an object of this content
     # type is created then any caches that are read from when browsing to
     # this path are cleared.
     to_set_content_types_paths_get_keys = list(
-        dict.fromkeys("ucache-ct-pth-%s" % ctid for ctid, obj_pk in recorded)
+        dict.fromkeys("%sct-pth-%s" % (KEY_PREFIX, ctid) for ctid, obj_pk in recorded)
     )
 
     # Dictionaries needed for cache.set_many
@@ -221,10 +265,10 @@ def cache_meta(recorder, cache_key, start_index=0, request=None):
 
     if di:
         try:
-            cache.set_many(di, 86400)
+            cache.set_many(di, meta_timeout)
         except NotImplementedError:
             for k, v in di.items():
-                cache.set(k, v, 86400)
+                cache.set(k, v, meta_timeout)
 
 
 def get_current_site_pk(request):
@@ -251,8 +295,8 @@ class Ultracache:
         self.request = request
         self._cached = empty_marker_1
         s = ":".join([name] + [str(p) for p in params])
-        hashed = hashlib.md5(s.encode("utf-8")).hexdigest()
-        self.cache_key = "ucache-%s" % hashed
+        hashed = hashlib.md5(s.encode("utf-8"), usedforsecurity=False).hexdigest()
+        self.cache_key = KEY_PREFIX + hashed
         self.recorder = get_or_create_recorder()
         self.start_index = len(self.recorder)
         # Objects recorded before this point must be recorded again so they
@@ -266,7 +310,7 @@ class Ultracache:
     @property
     def cached(self):
         if self._cached is empty_marker_1:
-            self._cached = cache.get(self.cache_key, empty_marker_2)
+            self._cached = get_cache().get(self.cache_key, empty_marker_2)
         return self._cached
 
     def __bool__(self):
@@ -275,11 +319,12 @@ class Ultracache:
     def cache(self, value):
         if self.used:
             raise RuntimeError("The cache method may only be called once per Ultracache object.")
-        cache.set(self.cache_key, value, self.timeout)
+        get_cache().set(self.cache_key, value, self.timeout)
         cache_meta(
             self.recorder,
             self.cache_key,
             start_index=self.start_index,
             request=self.request,
+            timeout=self.timeout,
         )
         self.used = True

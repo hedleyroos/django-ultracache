@@ -1,12 +1,15 @@
 import warnings
+from unittest import mock
 
 from django.conf import settings
-from django.core.cache import cache
+from django.core.cache import cache, caches
 from django.http import HttpResponse
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.test.client import RequestFactory
+from django.urls import reverse
+from django.views.generic.base import TemplateView
 
-from ultracache.decorators import cached_get, resolve_legacy_param
+from ultracache.decorators import cached_get, resolve_legacy_param, ultracache
 
 
 class CachedGetParamTestCase(TestCase):
@@ -108,3 +111,69 @@ class CachedGetParamTestCase(TestCase):
 
         with self.assertRaises(ValueError):
             view(self.factory.get("/rejected-view/"))
+
+
+class CachedGetHeadersTestCase(TestCase):
+    """Regression tests for item 24: cached_get must store headers via the
+    public mapping API under a versioned (ucache3-) key, and replay them
+    correctly on a cache hit."""
+
+    if "django.contrib.sites" in settings.INSTALLED_APPS:
+        fixtures = ["sites.json"]
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+
+    def test_payload_shape_and_header_replay(self):
+        url = reverse("cached-header-view")
+        backend = caches["default"]
+        captured = {}
+        orig_set = backend.set
+
+        def spy(key, value, *args, **kwargs):
+            captured[key] = value
+            return orig_set(key, value, *args, **kwargs)
+
+        with mock.patch.object(backend, "set", side_effect=spy):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+
+        payloads = [
+            (key, value)
+            for key, value in captured.items()
+            if isinstance(value, dict) and "headers" in value and "content" in value
+        ]
+        self.assertEqual(len(payloads), 1)
+        key, payload = payloads[0]
+        # The key prefix is versioned so 2.x payloads are ignored rather
+        # than mis-parsed after an upgrade
+        self.assertTrue(key.startswith("ucache3-"), key)
+        # Headers are stored as a plain name -> value mapping, not the
+        # private _store (name, value) tuple format
+        headers = {name.lower(): value for name, value in payload["headers"].items()}
+        self.assertEqual(headers.get("foo"), "bar")
+        self.assertEqual(headers.get("content-type"), "application/json")
+
+        # The second request is served from the cache and replays the headers
+        response = self.client.get(url)
+        self.assertEqual(response.headers["foo"], "bar")
+        self.assertEqual(response.headers["content-type"], "application/json")
+
+
+class ClassDecoratorMetadataTestCase(SimpleTestCase):
+    """Regression tests for item 25: the ultracache() class decorator must
+    not clobber the wrapped class's introspection metadata."""
+
+    def test_wrapped_class_preserves_metadata(self):
+        class Original(TemplateView):
+            """Original docstring."""
+
+            template_name = "ultracache/cached_header_view.html"
+
+        Decorated = ultracache(300)(Original)
+        self.assertTrue(issubclass(Decorated, Original))
+        self.assertEqual(Decorated.__name__, "Original")
+        self.assertEqual(Decorated.__qualname__, Original.__qualname__)
+        self.assertEqual(Decorated.__module__, Original.__module__)
+        self.assertEqual(Decorated.__doc__, "Original docstring.")

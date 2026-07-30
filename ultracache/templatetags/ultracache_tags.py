@@ -5,12 +5,11 @@ from django.utils.functional import Promise
 from django.template import TemplateSyntaxError
 from django.templatetags.cache import CacheNode
 from django.template.base import VariableDoesNotExist
-from django.core.cache import cache
 from django.core.cache.utils import make_template_fragment_key
 from django.conf import settings
 
 from ultracache import get_or_create_recorder
-from ultracache.utils import cache_meta, get_current_site_pk
+from ultracache.utils import cache_meta, get_cache, get_current_site_pk
 
 
 register = template.Library()
@@ -74,11 +73,18 @@ class UltraCacheNode(CacheNode):
         # again so it lands in this block's slice of the recorder.
         old_barrier = recorder.set_barrier(start_index)
         try:
+            cache = get_cache()
             value = cache.get(cache_key)
             if value is None:
                 value = self.nodelist.render(context)
                 cache.set(cache_key, value, expire_time)
-                cache_meta(recorder, cache_key, start_index, request=request)
+                cache_meta(
+                    recorder,
+                    cache_key,
+                    start_index,
+                    request=request,
+                    timeout=expire_time,
+                )
             else:
                 # A cached result was found. Replay the recorded tuples so
                 # outer template tags are aware of contained objects.
