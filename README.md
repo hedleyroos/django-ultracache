@@ -1,29 +1,62 @@
-# Django Ultracache
+# django-ultracache
 
-**Cache views, template fragments, and arbitrary Python code with automatic, fine-grained invalidation.**
+**Cache views, template fragments and arbitrary Python code — with automatic, fine-grained invalidation that reaches from Django, through your reverse proxies, all the way to the browser.**
 
-`django-ultracache` solves the hardest problem in caching: **invalidation**.
+[![PyPI version](https://img.shields.io/pypi/v/django-ultracache)](https://pypi.org/project/django-ultracache/)
+[![Python versions](https://img.shields.io/pypi/pyversions/django-ultracache)](https://pypi.org/project/django-ultracache/)
+[![Django versions](https://img.shields.io/pypi/frameworkversions/django/django-ultracache)](https://pypi.org/project/django-ultracache/)
+[![License](https://img.shields.io/pypi/l/django-ultracache)](https://github.com/hedleyroos/django-ultracache/blob/develop/LICENSE)
 
-Standard Django caching requires you to manually manage cache keys or set short timeouts. Ultracache is different. It automatically tracks every database object accessed during the rendering of a cached block. When those objects are modified or deleted, the relevant cache entries are immediately and automatically invalidated.
+There are two hard things in computer science, and cache invalidation is the one this library solves. Standard Django caching makes you choose between short timeouts (safe but slow) and manual `cache.delete()` bookkeeping (fast but fragile). Ultracache removes the choice: it **watches which database objects each cached block actually renders**, and the moment one of those objects is saved or deleted, exactly the affected cache entries disappear — nothing more, nothing less.
 
-Crucially, it also handles the "new object" problem: if a list of objects is cached, and a *new* object is created that should appear in that list, Ultracache knows to invalidate the list.
+It even solves the *"new object"* problem: cache a list of promotions, create a brand-new promotion, and the cached list is invalidated — because ultracache tracks content types, not just individual rows.
 
-## Features
+## Why not just `{% cache %}`?
 
-*   **Zero-Config Invalidation**: No manual `cache.delete()`. It just works.
-*   **Granular Updates**: Change one comment, and only the fragments displaying that comment are purged. The rest of the page stays cached.
-*   **Long-Term Caching**: Set timeouts to days or weeks. Content updates instantly when data changes.
-*   **Full Stack Integration**: Can issue PURGE requests to Varnish, Nginx, or via RabbitMQ to clear downstream caches.
-*   **Nested Caching**: Fully supports nested `{% ultracache %}` tags.
+|                        | Django `{% cache %}`                          | `{% ultracache %}`                                    |
+| ---------------------- | --------------------------------------------- | ----------------------------------------------------- |
+| Expiry                 | Timeout only                                  | Timeout **or the instant the data changes**           |
+| Invalidation           | Manual keys, manual `cache.delete()`          | Automatic, per-object                                 |
+| "New object" problem   | Not handled — stale lists until timeout       | Handled — new rows invalidate cached lists            |
+| Nested fragments       | Inner fragments invisible to the outer        | Fully supported — dependencies propagate outward      |
+| View caching           | Separate machinery, no invalidation           | Same engine: decorate a view, get the same tracking   |
+| Reverse proxy purging  | Not handled                                   | HTTP `PURGE` to Varnish/Nginx, or RabbitMQ fan-out    |
 
-## Requirements
+The payoff in practice:
 
-*   Python >= 3.11
-*   Django >= 4.1 (works under both WSGI and ASGI)
+```html
+{% ultracache 604800 "product_detail" product.pk %}
+    <h1>{{ product.title }}</h1>
+    <p>{{ product.price }}</p>
+{% endultracache %}
+```
 
-## Installation
+That fragment is cached for **a week**. Somewhere else, someone runs `product.save()` — and that fragment, and only that fragment, is gone. You never wrote an invalidation line.
 
-1.  **Install the package:**
+## The big picture
+
+```mermaid
+flowchart LR
+    subgraph record["Render and record"]
+        A["Request"] --> B["Cached block or view renders"]
+        B --> C["Patched model attribute access"]
+        C --> D["Recorder collects (content type, pk) pairs"]
+        D --> E[("Cache backend:<br/>content + dependency registry")]
+    end
+    subgraph purge["Change and invalidate"]
+        F["Model save / delete"] --> G["post_save / post_delete signal"]
+        G --> H["Registry lookup"]
+        H --> I["Delete exactly the dependent entries"]
+        I --> J["Optional PURGE to Varnish / Nginx / RabbitMQ"]
+    end
+    E -.->|"consulted by"| H
+```
+
+## Quickstart
+
+Requires Python >= 3.11 and Django >= 4.1. Works under both WSGI and ASGI.
+
+1.  **Install:**
 
     ```bash
     pip install django-ultracache
@@ -38,28 +71,27 @@ Crucially, it also handles the "new object" problem: if a list of objects is cac
     ]
     ```
 
-3.  **Add Middleware (recommended):**
-    Add `UltraCacheMiddleware` to `MIDDLEWARE`. It should be placed near the top, receiving requests early and sending responses late.
+3.  **Add the middleware (recommended)** near the top of the stack:
 
     ```python
     MIDDLEWARE = [
         "ultracache.middleware.UltraCacheMiddleware",
         ...,
-        "django.middleware.common.CommonMiddleware",
-        ...,
     ]
     ```
 
-    The middleware clears Ultracache's per-request recording state as soon
-    as the response leaves the middleware stack (also when a view raises).
-    It is recommended but not strictly required: nothing breaks
-    functionally without it, because a `request_finished` signal receiver
-    performs the same cleanup as a safety net at the very end of each
-    request. The middleware is both sync- and async-capable, so it adds no
-    thread-shifting overhead under ASGI.
+    <details>
+    <summary>Why "recommended" and not "required"?</summary>
 
-4.  **Check Context Processors:**
-    Ensure `django.template.context_processors.request` is enabled (it usually is by default).
+    The middleware clears ultracache's per-request recording state as soon
+    as the response leaves the middleware stack (also when a view raises).
+    Nothing breaks functionally without it, because a `request_finished`
+    signal receiver performs the same cleanup as a safety net at the very
+    end of each request. The middleware is both sync- and async-capable,
+    so it adds no thread-shifting overhead under ASGI.
+    </details>
+
+4.  **Check context processors** — `django.template.context_processors.request` must be enabled (it usually is by default):
 
     ```python
     TEMPLATES = [{
@@ -72,45 +104,58 @@ Crucially, it also handles the "new object" problem: if a list of objects is cac
     }]
     ```
 
-## Usage
+That's it. There is no step where you register models or declare dependencies — ultracache discovers them by watching your code run.
 
-### 1. Template Fragments
+## Three ways to cache
 
-Use the `{% ultracache %}` tag like Django's standard `{% cache %}`.
+### 1. Template fragments
+
+`{% ultracache %}` is a drop-in for Django's `{% cache %}` — same syntax, plus automatic invalidation:
 
 ```html
 {% load ultracache_tags %}
 
-{# Cache this sidebar for 24 hours #}
-{% ultracache 86400 "sidebar_widget" %}
-    
-    {# If any object in 'promotions' is modified/deleted -> Invalidate #}
-    {# If a new Promotion is created -> Invalidate (tracks ContentType) #}
+{% ultracache 86400 "sidebar" %}
+
+    {# Edit any of these promos -> this block is invalidated.       #}
+    {# Create a NEW Promotion   -> this block is also invalidated,  #}
+    {# because ultracache tracks the content type, not just rows.   #}
     {% for promo in promotions %}
-        <div class="promo">
-             {{ promo.title }}
-        </div>
+        <div class="promo">{{ promo.title }}</div>
     {% endfor %}
 
-    {# If this specific user object changes -> Invalidate #}
+    {# This user object changes -> invalidated too. #}
     <div>Welcome, {{ request.user.first_name }}</div>
 
 {% endultracache %}
 ```
 
-### 2. View Caching
+**Nesting is where it gets powerful.** Inner fragments invalidate independently, and outer fragments automatically learn everything their inner fragments depend on:
 
-You can cache entire views. Ultracache will execute the view code, render the template, and track all database accesses during the process.
+```html
+{% ultracache 86400 "product_page" product.pk %}
+    <h1>{{ product.title }}</h1>
 
-**Class-Based Views:**
+    {% ultracache 86400 "product_reviews" product.pk %}
+        {% for review in product.reviews.all %}
+            <blockquote>{{ review.body }}</blockquote>
+        {% endfor %}
+    {% endultracache %}
+{% endultracache %}
+```
 
-Use the `@ultracache` decorator on the class.
+Change the *product* → the outer fragment re-renders, but the reviews block inside it is still a cache hit, so the re-render is cheap. Change a *review* → both fragments are invalidated, because the outer fragment's output contains the review too. Ultracache gets both cases right without any hints.
+
+Notes: the fragment name must be a literal string; only GET and HEAD requests are cached; when `django.contrib.sites` is installed the current site's pk is automatically part of the key.
+
+### 2. Whole views
+
+Decorate a class-based view and the entire response — view code, template rendering, headers — is cached and tracked:
 
 ```python
-from ultracache.decorators import ultracache
 from django.views.generic import TemplateView
+from ultracache.decorators import ultracache
 
-# Cache for 1 hour. Invalidation happens if any referenced data changes.
 @ultracache(3600)
 class PostListView(TemplateView):
     template_name = "posts.html"
@@ -119,65 +164,94 @@ class PostListView(TemplateView):
         return {"posts": Post.objects.all()}
 ```
 
-**URL Patterns:**
+Publish a new post, edit a post, delete a post — the cached response is invalidated each time.
 
-If you are reusing views or cannot modify the view code, apply caching in `urls.py` using `cached_get`.
+If you can't touch the view (third-party apps), apply caching in `urls.py` with `cached_get`:
 
 ```python
 from django.urls import path
 from ultracache.decorators import cached_get
-from myapp.views import MyView
+from myapp.views import PostListView
 
 urlpatterns = [
-    path("my-view/", cached_get(3600)(MyView.as_view()), name="my-view"),
+    path("posts/", cached_get(3600)(PostListView.as_view()), name="posts"),
 ]
 ```
 
-*Note: `request.get_full_path()` is automatically added to the cache key, so query parameters are handled correctly.*
+To vary the cache key on request state, pass callables (each receives the request):
 
-### 3. Arbitrary Python Code
+```python
+@ultracache(3600, lambda request: request.is_secure())
+class PostListView(TemplateView):
+    ...
+```
 
-You can manually cache complex calculations.
+`request.get_full_path()` is automatically part of the key, so query parameters are handled correctly out of the box. Only GET and HEAD requests are cached, and responses for requests carrying `django.contrib.messages` are never cached. (Legacy string parameters like `"request.is_secure()"` still work but emit a `DeprecationWarning` — prefer callables.)
+
+### 3. Arbitrary Python code
+
+The same engine works outside templates and views, for any expensive computation:
 
 ```python
 from ultracache.utils import Ultracache
 
-# Define a cache key and timeout
-def get_user_metrics(user):
-    # 'request' is optional but recommended if in a view context
-    uc = Ultracache(300, "user-metrics", user.id)
-    
+def shop_summary(shop):
+    uc = Ultracache(3600, "shop-summary", shop.pk)
     if uc:
         return uc.cached
-    
-    # --- Start Calculation ---
-    # Ultracache records object access here
-    
-    score = calculate_complex_score(user)
-    stats = user.statistics_set.all()
-    
-    result = {"score": score, "stats": list(stats)}
-    
-    # --- End Calculation ---
-    
+
+    # Every model instance touched below is recorded. When any of
+    # them changes, this cache entry is invalidated automatically.
+    products = list(shop.product_set.all())
+    result = {
+        "product_count": len(products),
+        "top_seller": max(products, key=lambda p: p.sales).title,
+    }
+
     uc.cache(result)
     return result
 ```
 
-## How It Works
+## How it works
 
-Ultracache monkey-patches `django.db.models.Model.__getattribute__` to detect when any attribute of a model instance is accessed.
+Ultracache patches `django.db.models.Model.__getattribute__` — that is the "magic" that makes explicit dependency declarations unnecessary:
 
-1.  **Recording**: When you enter a `{% ultracache %}` block or a decorated view, a "recorder" is started in context-local storage (a `contextvars.ContextVar`, which is safe under both threaded WSGI and async ASGI).
-2.  **Tracking**: As you iterate over querysets or access model attributes (e.g., `{{ product.price }}`), Ultracache notes the object's `ContentType` and `primary key`.
-3.  **Registry**: When the block finishes rendering, Ultracache saves the content to the cache *and* writes a "registry" entry linking those objects to this specific cache key.
-4.  **Invalidation**: When an object is saved or deleted, a `post_save` or `post_delete` signal triggers. Ultracache checks the registry for any cache keys dependent on that object and deletes them.
+1.  **Recording** — entering an `{% ultracache %}` block or a decorated view starts a *recorder* in context-local storage (a `contextvars.ContextVar`, safe under both threaded WSGI and async ASGI).
+2.  **Tracking** — as your code accesses model attributes (`{{ product.price }}`, `p.sales`, ...), ultracache notes each object's content type and primary key.
+3.  **Registry** — when the block finishes, ultracache stores the rendered content *and* a reverse index: for each recorded object, which cache keys (and which URL paths) depend on it.
+4.  **Invalidation** — a `post_save`/`post_delete` signal looks the object up in the registry, deletes exactly the dependent cache entries, and optionally purges the dependent paths from your reverse proxies.
 
-## Advanced Configuration
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant D as Django
+    participant R as Recorder
+    participant C as Cache backend
 
-### Reverse Proxy Purging (Varnish, Nginx)
+    Note over B,C: First request — render, record, store
+    B->>D: GET /products/
+    D->>R: model attribute accesses record (content type, pk)
+    D->>C: store rendered content
+    D->>C: store registry entries (object → cache keys, paths)
+    D-->>B: response
 
-Ultracache can issue HTTP PURGE requests to downstream caches when data changes. Configure this in your `settings.py`:
+    Note over B,C: Later — the data changes
+    D->>D: product.save() fires post_save
+    D->>C: registry lookup for product
+    C-->>D: dependent cache keys and paths
+    D->>C: delete_many(cache keys)
+    D->>D: purger sends PURGE for paths (if configured)
+```
+
+The overhead of the patch is negligible: when no cached block is active, the hot path is a single `ContextVar` lookup that returns `None`. Recording itself deduplicates on insert and stores nothing but `(content_type_id, pk)` pairs.
+
+Curious about the internals — the `Recorder`, dedup barriers, registry TTL handling, and the WSGI/ASGI concurrency model? Read [architecture.md](architecture.md).
+
+## Full-stack purging
+
+A Django-level cache hit is good; not hitting Django at all is better. When data changes, ultracache can also purge the affected URL paths from downstream HTTP caches, so long-lived proxy caching becomes safe.
+
+### Direct purging (Varnish, Nginx)
 
 ```python
 ULTRACACHE = {
@@ -188,11 +262,21 @@ ULTRACACHE = {
 }
 ```
 
-The `url` should point to your caching proxy. Ultracache will append the resource path to this URL when issuing a purge.
+Ultracache appends the resource path to `url` and issues an HTTP `PURGE` request. Purge failures are logged, never raised into your request cycle.
 
-### Broadcast Purging (Celery + RabbitMQ)
+### Broadcast purging (Celery + RabbitMQ)
 
-For multi-server setups, you can broadcast purge instructions to all interested parties over RabbitMQ.
+With multiple proxy servers, purge instructions are broadcast to all of them:
+
+```mermaid
+flowchart LR
+    A["Django: model change"] --> B["Celery task broadcast_purge"]
+    B --> C[("RabbitMQ fanout exchange<br/>purgatory")]
+    C --> D1["cache-purge-consumer.py<br/>on proxy host 1"]
+    C --> D2["cache-purge-consumer.py<br/>on proxy host 2"]
+    D1 --> E1["HTTP PURGE to local Varnish / Nginx"]
+    D2 --> E2["HTTP PURGE to local Varnish / Nginx"]
+```
 
 ```python
 ULTRACACHE = {
@@ -202,11 +286,11 @@ ULTRACACHE = {
 }
 ```
 
-This requires `celery` **and** `pika` to be installed (available together as
-the `broadcast` extra: `pip install django-ultracache[broadcast]`), plus a
-running RabbitMQ broker. Celery must be configured for your project; the
-purge instruction is queued as a Celery task which publishes the path (and
-relevant headers) to a fanout exchange named `purgatory` on RabbitMQ.
+This requires `celery` **and** `pika` (available together as the `broadcast`
+extra: `pip install django-ultracache[broadcast]`), plus a running RabbitMQ
+broker. Celery must be configured for your project; the purge instruction is
+queued as a Celery task which publishes the path (and relevant headers) to a
+fanout exchange named `purgatory`.
 
 By default the RabbitMQ connection is derived from `CELERY_BROKER_URL`. To
 use a different broker for purging, set:
@@ -232,21 +316,43 @@ optional keys:
 *   `host`: if set, sent as the `Host` header with each purge request.
 *   `logfile`: a file path to log purges to, or `stdout`.
 
-### Custom Cache Backend
+### Fine-grained proxy purging
 
-Ultracache uses the `default` cache alias by default. To use a different backend:
+Proxies usually cache multiple variants of the same path (`Vary: Accept-Language`, cookie-split caches, ...). Tell ultracache which request headers and cookies distinguish those variants, and it records them alongside each cached path — so a purge hits the exact variant, not a blunt path wildcard:
 
 ```python
 ULTRACACHE = {
-    "cache_alias": "secondary",
+    "purge": {
+        "method": "ultracache.purgers.varnish",
+        "url": "http://127.0.0.1:80/",
+    },
+    "consider-headers": ["accept-language"],
+    "consider-cookies": ["country"],
 }
 ```
 
-## Best Practices
+The listed cookie names are folded into a synthetic `cookie` header on the purge request. (Setting `"cookie"` in `consider-headers` together with `consider-cookies` is contradictory and raises an error at startup.)
 
-1.  **Cache Keys**: Keep them simple. You don't need to include `updated_at` timestamps in your keys—Ultracache handles staleness for you. Use keys to differentiate *context* (e.g., `user.id` for private content, `language_code` for translations).
-2.  **Order of Operations**: Place `{% ultracache %}` as high as possible in your template DOM tree to maximize performance, but be mindful of parts that *must* remain dynamic (like CSRF tokens).
-3.  **Context Processors**: If your context processors access the database (e.g., loading a site menu), that access is also recorded. This means global site changes can invalidate page caches, which is usually desired behavior.
+## Settings reference
+
+All settings live in a single `ULTRACACHE` dict in `settings.py`. Every key is optional.
+
+| Key                       | Default                     | Purpose                                                                                          |
+| ------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------ |
+| `purge.method`            | –                           | Dotted path to a purger callable (`ultracache.purgers.varnish` / `.nginx` / `.broadcast`). Validated at startup. |
+| `purge.url`               | –                           | Base URL of the proxy that receives `PURGE` requests.                                            |
+| `invalidate`              | `True`                      | Master switch for signal-driven invalidation. Set `False` to record and cache without invalidating. |
+| `cache_alias`             | `"default"`                 | Which `CACHES` alias ultracache stores content and registry data in.                             |
+| `rabbitmq-url`            | from `CELERY_BROKER_URL`    | Broker URL used by broadcast purging.                                                            |
+| `consider-headers`        | `[]`                        | Request headers recorded with each cached path, replayed on `PURGE` for variant-exact purging.   |
+| `consider-cookies`        | `[]`                        | Cookie names folded into a synthetic `cookie` header for variant-exact purging.                  |
+| `max-registry-value-size` | `1000000`                   | Max size in bytes of one registry list; oldest entries are evicted beyond it.                    |
+
+## Best practices
+
+1.  **Keep cache keys simple.** You don't need `updated_at` timestamps in your keys — ultracache handles staleness for you. Use keys to differentiate *context* (e.g. `user.id` for private content, `language_code` for translations).
+2.  **Cache high in the template tree.** Place `{% ultracache %}` as high as possible to maximize the win, but keep genuinely dynamic parts (like CSRF tokens) outside cached blocks.
+3.  **Context processors count.** If a context processor touches the database (e.g. a site menu), that access is recorded too — so global site changes invalidate page caches, which is usually exactly what you want.
 
 ## Upgrading from 2.x
 
@@ -262,9 +368,17 @@ may serve stale content for up to their configured timeout — not just a
 cold cache. If that is unacceptable, flush the cache backend as part of
 the upgrade.
 
-## Running Tests
+## Running the tests
 
 ```bash
 pip install tox
 tox
 ```
+
+## License and links
+
+BSD-3-Clause. Written by Hedley Roos.
+
+*   [Architecture deep-dive](architecture.md) — recorder internals, dedup barriers, registry TTLs, WSGI/ASGI concurrency model
+*   [Changelog](CHANGELOG.rst)
+*   [PyPI](https://pypi.org/project/django-ultracache/) · [GitHub](https://github.com/hedleyroos/django-ultracache)
