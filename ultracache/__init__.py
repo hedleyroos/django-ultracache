@@ -23,16 +23,20 @@ class Recorder:
     dependencies.
     """
 
-    __slots__ = ("_items", "_last_index", "_barriers")
+    __slots__ = ("_items", "_last_index", "_barriers", "_effective_barrier")
 
     def __init__(self):
         self._items = []
         self._last_index = {}
         self._barriers = []
+        # Cached max of the active barriers. append() runs once per recorded
+        # attribute access, so the max is maintained on push/pop rather than
+        # recomputed per append.
+        self._effective_barrier = 0
 
     def append(self, tu):
         last = self._last_index.get(tu)
-        if last is not None and last >= max(self._barriers, default=0):
+        if last is not None and last >= self._effective_barrier:
             return
         self._last_index[tu] = len(self._items)
         self._items.append(tu)
@@ -42,10 +46,14 @@ class Recorder:
         value may be pushed by several constructs and must be popped once
         per push."""
         self._barriers.append(barrier)
+        if barrier > self._effective_barrier:
+            self._effective_barrier = barrier
 
     def pop_barrier(self, barrier):
         """Deactivate one occurrence of an active dedup barrier."""
         self._barriers.remove(barrier)
+        if barrier == self._effective_barrier:
+            self._effective_barrier = max(self._barriers, default=0)
 
     def __len__(self):
         return len(self._items)

@@ -46,9 +46,9 @@ Performance
    insert, and ``cache_meta`` no longer does quadratic membership scans.
 #. Micro-benchmark (``bin/benchmark.py``, 5 runs of 100,000 iterations of 4
    attribute accesses, Python 3.12/Django 6.0): patched-with-recording-inactive
-   dropped from 0.588s to 0.070s (~8x faster) and patched-with-recording-active
-   from 3.086s to 0.662s (~4.7x faster; the old number was additionally
-   inflated by profiling instrumentation). Unpatched baseline is ~0.012s.
+   dropped from 0.588s to ~0.08s (~7x faster) and patched-with-recording-active
+   from 3.086s to ~0.69s (~4.5x faster; the old number was additionally
+   inflated by profiling instrumentation). Unpatched baseline is ~0.013s.
    Note: the pre-3.0 benchmark's "baseline" was itself the patched function,
    so historical comparisons should use the numbers above.
 #. The recorder is created lazily by the first caching construct instead of on
