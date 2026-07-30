@@ -9,11 +9,17 @@ from ultracache.tests import views
 
 urlpatterns = [
     re_path(r"^render-view/$", views.RenderView.as_view(), name="render-view"),
+    re_path(r"^plain-view/$", views.plain_view, name="plain-view"),
     re_path(r"^method-cached-view/$", views.MethodCachedView.as_view(), name="method-cached-view"),
     re_path(r"^class-cached-view/$", views.ClassCachedView.as_view(), name="class-cached-view"),
     re_path(r"^cached-header-view/$", views.CachedHeaderView.as_view(), name="cached-header-view"),
     re_path(
         r"^bustable-cached-view/$", views.BustableCachedView.as_view(), name="bustable-cached-view"
+    ),
+    re_path(
+        r"^nested-cached-view/$",
+        views.NestedRenderCachedView.as_view(),
+        name="nested-cached-view",
     ),
     re_path(
         r"^non-bustable-cached-view/$",

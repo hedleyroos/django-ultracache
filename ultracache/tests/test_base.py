@@ -1,6 +1,9 @@
 ## -*- coding: utf-8 -*-
 
+from unittest import mock
+
 from django import template
+from django.template.base import FilterExpression, VariableDoesNotExist
 from django.conf import settings
 from django.core.cache import cache
 from django.http.cookie import SimpleCookie
@@ -9,6 +12,7 @@ from django.test.client import Client, RequestFactory
 from django.test.utils import override_settings
 from django.urls import reverse
 
+from ultracache import clear_recorder
 from ultracache.tests.models import DummyModel, DummyForeignModel, DummyOtherModel
 from ultracache.tests import views
 from ultracache.tests.utils import dummy_proxy
@@ -269,6 +273,138 @@ class TemplateTagsTestCase(TestCase):
         self.assertTrue("counter two = 6" in result)
         self.assertTrue("counter three = 4" in result)
         self.assertFalse(dummy_proxy.is_cached("/eee/"))
+
+    def test_non_integer_timeout_raises_template_syntax_error(self):
+        """Regression test for item 2: error paths must raise
+        TemplateSyntaxError, not NameError."""
+        t = template.Template(
+            "{% load ultracache_tags %}\
+            {% ultracache 'abc' 'test_ultracache_nonint_timeout' %}1{% endultracache %}"
+        )
+        context = template.Context({"request": self.request})
+        with self.assertRaises(template.TemplateSyntaxError):
+            t.render(context)
+
+    def test_undefined_timeout_variable_raises_template_syntax_error(self):
+        """Regression test for item 2: an undefined timeout variable resolves
+        to the empty string, which is not a valid integer."""
+        t = template.Template(
+            "{% load ultracache_tags %}\
+            {% ultracache undefined_timeout 'test_ultracache_undef_timeout' %}1{% endultracache %}"
+        )
+        context = template.Context({"request": self.request})
+        with self.assertRaises(template.TemplateSyntaxError):
+            t.render(context)
+
+    def test_too_few_arguments_raises_template_syntax_error(self):
+        """Regression test for item 3: the malformed format string raised
+        TypeError instead of a helpful TemplateSyntaxError."""
+        with self.assertRaises(template.TemplateSyntaxError) as cm:
+            template.Template(
+                "{% load ultracache_tags %}\
+                {% ultracache 1200 %}1{% endultracache %}"
+            )
+        message = str(cm.exception)
+        self.assertIn("ultracache", message)
+        self.assertIn("requires at least 2 arguments", message)
+
+    def _raise_for_token(self, marker):
+        """Patch FilterExpression.resolve so the variable named ``marker``
+        raises VariableDoesNotExist, which FilterExpression normally
+        swallows."""
+        orig_resolve = FilterExpression.resolve
+
+        def resolve(fe, context, ignore_failures=False):
+            if fe.token == marker:
+                raise VariableDoesNotExist("Failed lookup for %s" % marker)
+            return orig_resolve(fe, context, ignore_failures)
+
+        return mock.patch.object(FilterExpression, "resolve", resolve)
+
+    def test_unresolvable_timeout_variable_raises_template_syntax_error(self):
+        """A timeout variable whose resolution raises VariableDoesNotExist
+        must produce a TemplateSyntaxError naming the variable."""
+        with self._raise_for_token("unresolvable_timeout"):
+            t = template.Template(
+                "{% load ultracache_tags %}\
+                {% ultracache unresolvable_timeout 'test_ultracache_unres_timeout' %}1{% endultracache %}"
+            )
+            with self.assertRaises(template.TemplateSyntaxError) as cm:
+                t.render(template.Context({"request": self.request}))
+        self.assertIn("unknown variable", str(cm.exception))
+
+    def test_non_get_request_bypasses_cache(self):
+        """Non-GET/HEAD requests must neither read from nor write to the
+        cache."""
+        post_request = self.factory.post("/post-path/")
+        t = template.Template(
+            "{% load ultracache_tags %}\
+            {% ultracache 1200 'test_ultracache_non_get' %}first{% endultracache %}"
+        )
+        result = t.render(template.Context({"request": post_request}))
+        self.assertTrue("first" in result)
+
+        # The POST render did not populate the cache: a GET render misses
+        # and caches its own content.
+        t = template.Template(
+            "{% load ultracache_tags %}\
+            {% ultracache 1200 'test_ultracache_non_get' %}second{% endultracache %}"
+        )
+        result = t.render(template.Context({"request": self.factory.get("/get-path/")}))
+        self.assertTrue("second" in result)
+
+        # A subsequent POST render does not read the now-cached content
+        t = template.Template(
+            "{% load ultracache_tags %}\
+            {% ultracache 1200 'test_ultracache_non_get' %}third{% endultracache %}"
+        )
+        result = t.render(template.Context({"request": post_request}))
+        self.assertTrue("third" in result)
+
+    def test_unresolvable_first_vary_on_variable(self):
+        """Regression test for item 4: an unresolvable first vary-on variable
+        raised NameError."""
+        with self._raise_for_token("unresolvable_var"):
+            t = template.Template(
+                "{% load ultracache_tags %}\
+                {% ultracache 1200 'test_ultracache_unresolvable_first' unresolvable_var %}first{% endultracache %}"
+            )
+            result = t.render(template.Context({"request": self.request}))
+            self.assertTrue("first" in result)
+
+            # The block was cached despite the unresolvable variable
+            t = template.Template(
+                "{% load ultracache_tags %}\
+                {% ultracache 1200 'test_ultracache_unresolvable_first' unresolvable_var %}second{% endultracache %}"
+            )
+            result = t.render(template.Context({"request": self.request}))
+            self.assertTrue("first" in result)
+
+    def test_unresolvable_vary_on_variable_uses_stable_placeholder(self):
+        """Regression test for item 4: an unresolvable vary-on variable must
+        contribute a stable placeholder to the cache key instead of silently
+        repeating the previous variable's value."""
+        with self._raise_for_token("unresolvable_var"):
+            t = template.Template(
+                "{% load ultracache_tags %}\
+                {% ultracache 1200 'test_ultracache_unresolvable_stale' aaa_var unresolvable_var %}first{% endultracache %}"
+            )
+            result = t.render(
+                template.Context({"request": self.request, "aaa_var": "xyz"})
+            )
+            self.assertTrue("first" in result)
+
+        # A normally-undefined variable resolves to the empty string. The
+        # unresolvable variable above must have produced the same cache key,
+        # so this render is a cache hit.
+        t = template.Template(
+            "{% load ultracache_tags %}\
+            {% ultracache 1200 'test_ultracache_unresolvable_stale' aaa_var undefined_var %}second{% endultracache %}"
+        )
+        result = t.render(
+            template.Context({"request": self.request, "aaa_var": "xyz"})
+        )
+        self.assertTrue("first" in result)
 
 
 class DecoratorTestCase(TestCase):
@@ -578,3 +714,77 @@ class DecoratorTestCase(TestCase):
         self.assertTrue("aaa=1" in response.content.decode("utf-8"))
         response = self.client.get(url + "?aaa=2")
         self.assertFalse("aaa=2" in response.content.decode("utf-8"))
+
+
+class NestedCachedGetTestCase(TestCase):
+    """Issue 1 regression: a cached_get-decorated view rendered INSIDE an
+    {% ultracache %} block must not clobber the enclosing block's recorder.
+    Objects accessed by the view must register as dependencies of the outer
+    block so that saving them invalidates the outer block's cache entry."""
+
+    if "django.contrib.sites" in settings.INSTALLED_APPS:
+        fixtures = ["sites.json"]
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        clear_recorder()
+        self.addCleanup(clear_recorder)
+        self.factory = RequestFactory()
+
+    def render(self, path, counter):
+        t = template.Template(
+            "{% load ultracache_tags ultracache_test_tags %}"
+            "{% ultracache 1200 'test_nested_cached_get_outer' %}"
+            "counter = {{ counter }} "
+            "{% render_view 'nested-cached-view' %}"
+            "{% endultracache %}"
+        )
+        request = self.factory.get(path)
+        result = t.render(
+            template.Context({"request": request, "counter": counter})
+        )
+        # Each render simulates a separate request
+        clear_recorder()
+        return result
+
+    def test_outer_block_invalidated_by_object_rendered_in_view(self):
+        one = DummyModel.objects.create(title="One", code="one")
+        result = self.render("/nested-outer-1/", 1)
+        self.assertIn("counter = 1", result)
+        self.assertIn("nested = One", result)
+
+        # The object is rendered only inside the cached_get view. Saving it
+        # must invalidate the OUTER block's cache entry too.
+        one.title = "Onxe"
+        one.save()
+        result = self.render("/nested-outer-2/", 2)
+        self.assertIn("nested = Onxe", result)
+        self.assertIn("counter = 2", result)
+
+
+class RenderViewTestTagTestCase(TestCase):
+    """Coverage for the render_view test helper tag."""
+
+    if "django.contrib.sites" in settings.INSTALLED_APPS:
+        fixtures = ["sites.json"]
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.factory = RequestFactory()
+
+    def test_wrong_argument_count_raises(self):
+        with self.assertRaises(template.TemplateSyntaxError):
+            template.Template(
+                "{% load ultracache_test_tags %}{% render_view %}"
+            )
+
+    def test_renders_plain_http_response_view(self):
+        t = template.Template(
+            "{% load ultracache_test_tags %}{% render_view 'plain-view' %}"
+        )
+        result = t.render(
+            template.Context({"request": self.factory.get("/")})
+        )
+        self.assertIn("plain = ok", result)

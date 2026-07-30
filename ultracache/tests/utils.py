@@ -36,3 +36,12 @@ dummy_proxy = DummyProxy()
 
 def dummy_purger(path, headers=None):
     dummy_proxy.purge(path, headers=headers)
+
+
+# Records calls so tests can assert that a purger configured via
+# override_settings is actually used (item 21).
+alt_purge_log = []
+
+
+def alt_purger(path, headers=None):
+    alt_purge_log.append((path, headers))

@@ -1,22 +1,15 @@
 from django import template
 
-try:
-    from django.utils.encoding import force_str
-except ImportError:
-    from django.utils.encoding import force_text as force_str
-try:
-    from django.utils.translation import ugettext as _
-except ImportError:
-    from django.utils.translation import gettext as _
+from django.utils.encoding import force_str
 from django.utils.functional import Promise
+from django.template import TemplateSyntaxError
 from django.templatetags.cache import CacheNode
 from django.template.base import VariableDoesNotExist
-from django.core.cache import cache
 from django.core.cache.utils import make_template_fragment_key
 from django.conf import settings
 
-from ultracache import _thread_locals
-from ultracache.utils import cache_meta, get_current_site_pk
+from ultracache import get_or_create_recorder
+from ultracache.utils import cache_meta, get_cache, get_current_site_pk
 
 
 register = template.Library()
@@ -28,12 +21,9 @@ class UltraCacheNode(CacheNode):
     variables. Allow translated strings."""
 
     def __init__(self, *args):
-        # Django 1.7 introduced cache_name. Using different caches makes
-        # invalidation difficult. It will be supported in a future version.
-        try:
-            super(UltraCacheNode, self).__init__(*args, cache_name=None)
-        except TypeError:
-            super(UltraCacheNode, self).__init__(*args)
+        # Using different caches makes invalidation difficult. cache_name will
+        # be supported in a future version.
+        super().__init__(*args, cache_name=None)
 
     def render(self, context):
         try:
@@ -55,14 +45,12 @@ class UltraCacheNode(CacheNode):
         if request.method.lower() not in ("get", "head"):
             return self.nodelist.render(context)
 
-        # Set a list on the request. Django's template rendering is recursive
-        # and single threaded so we can use a list to keep track of contained
+        # Lazily create the recorder for this context. Django's template
+        # rendering is recursive and runs in a single context so an
+        # insertion-ordered recorder is enough to keep track of contained
         # objects.
-        if not hasattr(_thread_locals, "ultracache_recorder"):
-            setattr(_thread_locals, "ultracache_recorder", [])
-            start_index = 0
-        else:
-            start_index = len(_thread_locals.ultracache_recorder)
+        recorder = get_or_create_recorder()
+        start_index = len(recorder)
 
         vary_on = []
         if "django.contrib.sites" in settings.INSTALLED_APPS:
@@ -72,22 +60,38 @@ class UltraCacheNode(CacheNode):
             try:
                 r = var.resolve(context)
             except VariableDoesNotExist:
-                pass
+                # Unresolvable variables contribute a stable placeholder to
+                # the cache key.
+                r = ""
             if isinstance(r, Promise):
                 r = force_str(r)
             vary_on.append(r)
 
         cache_key = make_template_fragment_key(self.fragment_name, vary_on)
-        value = cache.get(cache_key)
-        if value is None:
-            value = self.nodelist.render(context)
-            cache.set(cache_key, value, expire_time)
-            cache_meta(_thread_locals.ultracache_recorder, cache_key, start_index, request=request)
-        else:
-            # A cached result was found. Set tuples in _ultracache manually so
-            # outer template tags are aware of contained objects.
-            for tu in cache.get(cache_key + "-objs", []):
-                _thread_locals.ultracache_recorder.append(tu)
+        # Within this block a distinct object only needs to be recorded once,
+        # but an object recorded before the block started must be recorded
+        # again so it lands in this block's slice of the recorder.
+        recorder.push_barrier(start_index)
+        try:
+            cache = get_cache()
+            value = cache.get(cache_key)
+            if value is None:
+                value = self.nodelist.render(context)
+                cache.set(cache_key, value, expire_time)
+                cache_meta(
+                    recorder,
+                    cache_key,
+                    start_index,
+                    request=request,
+                    timeout=expire_time,
+                )
+            else:
+                # A cached result was found. Replay the recorded tuples so
+                # outer template tags are aware of contained objects.
+                for tu in cache.get(cache_key + "-objs", []):
+                    recorder.append(tu)
+        finally:
+            recorder.pop_barrier(start_index)
 
         return value
 
@@ -99,7 +103,7 @@ def do_ultracache(parser, token):
     parser.delete_first_token()
     tokens = token.split_contents()
     if len(tokens) < 3:
-        raise TemplateSyntaxError("" % r" tag requires at least 2 arguments." % tokens[0])
+        raise TemplateSyntaxError("'%s' tag requires at least 2 arguments." % tokens[0])
     return UltraCacheNode(
         nodelist,
         parser.compile_filter(tokens[1]),

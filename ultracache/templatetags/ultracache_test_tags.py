@@ -38,6 +38,7 @@ class RenderViewNode(template.Node):
             result.render()
             html = result.rendered_content
         elif isinstance(result, HttpResponse):
-            # Old-school view
-            html = result.content
+            # Old-school view. content is bytes; the template engine joins
+            # node output as str.
+            html = result.content.decode("utf-8")
         return html

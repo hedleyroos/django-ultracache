@@ -1,4 +1,5 @@
 from django.core.cache import cache
+from django.http import HttpResponse
 from django.views.generic.base import TemplateView
 
 from ultracache.decorators import cached_get, ultracache
@@ -22,6 +23,12 @@ class RenderView(TemplateView):
         except DummyOtherModel.DoesNotExist:
             pass
         return context
+
+
+def plain_view(request):
+    """Old-school function view returning a plain HttpResponse. Used to
+    exercise the HttpResponse branch of the render_view test tag."""
+    return HttpResponse("plain = ok")
 
 
 class BaseCachedView(TemplateView):
@@ -73,6 +80,23 @@ class BustableCachedView(TemplateView):
     @cached_get(300)
     def get(self, *args, **kwargs):
         return super(BustableCachedView, self).get(*args, **kwargs)
+
+
+class NestedRenderCachedView(TemplateView):
+    """A cached_get-decorated view intended to be rendered INSIDE an
+    {% ultracache %} block via the render_view test tag. Used to prove
+    cached_get does not clobber the enclosing block's recorder."""
+
+    template_name = "ultracache/nested_cached_view.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["one"] = DummyModel.objects.get(code="one")
+        return context
+
+    @cached_get(300)
+    def get(self, *args, **kwargs):
+        return super().get(*args, **kwargs)
 
 
 class NonBustableCachedView(TemplateView):
