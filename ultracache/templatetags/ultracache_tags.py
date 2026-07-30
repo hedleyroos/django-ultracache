@@ -9,6 +9,7 @@ try:
 except ImportError:
     from django.utils.translation import gettext as _
 from django.utils.functional import Promise
+from django.template import TemplateSyntaxError
 from django.templatetags.cache import CacheNode
 from django.template.base import VariableDoesNotExist
 from django.core.cache import cache
@@ -72,7 +73,9 @@ class UltraCacheNode(CacheNode):
             try:
                 r = var.resolve(context)
             except VariableDoesNotExist:
-                pass
+                # Unresolvable variables contribute a stable placeholder to
+                # the cache key.
+                r = ""
             if isinstance(r, Promise):
                 r = force_str(r)
             vary_on.append(r)
@@ -99,7 +102,7 @@ def do_ultracache(parser, token):
     parser.delete_first_token()
     tokens = token.split_contents()
     if len(tokens) < 3:
-        raise TemplateSyntaxError("" % r" tag requires at least 2 arguments." % tokens[0])
+        raise TemplateSyntaxError("'%s' tag requires at least 2 arguments." % tokens[0])
     return UltraCacheNode(
         nodelist,
         parser.compile_filter(tokens[1]),

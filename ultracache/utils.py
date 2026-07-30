@@ -45,9 +45,14 @@ def reduce_list_size(li):
     keep = li
     toss = []
     n = len(li)
-    decrement_by = max(n / 10, 10)
+    decrement_by = max(n // 10, 10)
     while (size >= MAX_SIZE) and (n > 0):
         n -= decrement_by
+        if n <= 0:
+            # Even the smallest tail is too large. Toss everything.
+            keep = []
+            toss = li
+            break
         toss = li[:-n]
         keep = li[-n:]
         size = len(repr(keep))

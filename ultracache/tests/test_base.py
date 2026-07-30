@@ -1,6 +1,9 @@
 ## -*- coding: utf-8 -*-
 
+from unittest import mock
+
 from django import template
+from django.template.base import FilterExpression, VariableDoesNotExist
 from django.conf import settings
 from django.core.cache import cache
 from django.http.cookie import SimpleCookie
@@ -269,6 +272,98 @@ class TemplateTagsTestCase(TestCase):
         self.assertTrue("counter two = 6" in result)
         self.assertTrue("counter three = 4" in result)
         self.assertFalse(dummy_proxy.is_cached("/eee/"))
+
+    def test_non_integer_timeout_raises_template_syntax_error(self):
+        """Regression test for item 2: error paths must raise
+        TemplateSyntaxError, not NameError."""
+        t = template.Template(
+            "{% load ultracache_tags %}\
+            {% ultracache 'abc' 'test_ultracache_nonint_timeout' %}1{% endultracache %}"
+        )
+        context = template.Context({"request": self.request})
+        with self.assertRaises(template.TemplateSyntaxError):
+            t.render(context)
+
+    def test_undefined_timeout_variable_raises_template_syntax_error(self):
+        """Regression test for item 2: an undefined timeout variable resolves
+        to the empty string, which is not a valid integer."""
+        t = template.Template(
+            "{% load ultracache_tags %}\
+            {% ultracache undefined_timeout 'test_ultracache_undef_timeout' %}1{% endultracache %}"
+        )
+        context = template.Context({"request": self.request})
+        with self.assertRaises(template.TemplateSyntaxError):
+            t.render(context)
+
+    def test_too_few_arguments_raises_template_syntax_error(self):
+        """Regression test for item 3: the malformed format string raised
+        TypeError instead of a helpful TemplateSyntaxError."""
+        with self.assertRaises(template.TemplateSyntaxError) as cm:
+            template.Template(
+                "{% load ultracache_tags %}\
+                {% ultracache 1200 %}1{% endultracache %}"
+            )
+        message = str(cm.exception)
+        self.assertIn("ultracache", message)
+        self.assertIn("requires at least 2 arguments", message)
+
+    def _raise_for_token(self, marker):
+        """Patch FilterExpression.resolve so the variable named ``marker``
+        raises VariableDoesNotExist, which FilterExpression normally
+        swallows."""
+        orig_resolve = FilterExpression.resolve
+
+        def resolve(fe, context, ignore_failures=False):
+            if fe.token == marker:
+                raise VariableDoesNotExist("Failed lookup for %s" % marker)
+            return orig_resolve(fe, context, ignore_failures)
+
+        return mock.patch.object(FilterExpression, "resolve", resolve)
+
+    def test_unresolvable_first_vary_on_variable(self):
+        """Regression test for item 4: an unresolvable first vary-on variable
+        raised NameError."""
+        with self._raise_for_token("unresolvable_var"):
+            t = template.Template(
+                "{% load ultracache_tags %}\
+                {% ultracache 1200 'test_ultracache_unresolvable_first' unresolvable_var %}first{% endultracache %}"
+            )
+            result = t.render(template.Context({"request": self.request}))
+            self.assertTrue("first" in result)
+
+            # The block was cached despite the unresolvable variable
+            t = template.Template(
+                "{% load ultracache_tags %}\
+                {% ultracache 1200 'test_ultracache_unresolvable_first' unresolvable_var %}second{% endultracache %}"
+            )
+            result = t.render(template.Context({"request": self.request}))
+            self.assertTrue("first" in result)
+
+    def test_unresolvable_vary_on_variable_uses_stable_placeholder(self):
+        """Regression test for item 4: an unresolvable vary-on variable must
+        contribute a stable placeholder to the cache key instead of silently
+        repeating the previous variable's value."""
+        with self._raise_for_token("unresolvable_var"):
+            t = template.Template(
+                "{% load ultracache_tags %}\
+                {% ultracache 1200 'test_ultracache_unresolvable_stale' aaa_var unresolvable_var %}first{% endultracache %}"
+            )
+            result = t.render(
+                template.Context({"request": self.request, "aaa_var": "xyz"})
+            )
+            self.assertTrue("first" in result)
+
+        # A normally-undefined variable resolves to the empty string. The
+        # unresolvable variable above must have produced the same cache key,
+        # so this render is a cache hit.
+        t = template.Template(
+            "{% load ultracache_tags %}\
+            {% ultracache 1200 'test_ultracache_unresolvable_stale' aaa_var undefined_var %}second{% endultracache %}"
+        )
+        result = t.render(
+            template.Context({"request": self.request, "aaa_var": "xyz"})
+        )
+        self.assertTrue("first" in result)
 
 
 class DecoratorTestCase(TestCase):

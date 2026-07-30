@@ -128,6 +128,7 @@ def on_post_delete(sender, **kwargs):
             if purger is not None:
                 # The key *must* be deleted first in case the purger fails
                 items = cache.get(key, [])
+                cache.delete(key)
                 for li in items:
                     purger(li[0], li[1])
             else:
