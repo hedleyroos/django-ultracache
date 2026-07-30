@@ -13,7 +13,7 @@ This is django-ultracache, a poweful caching framework for Django
 
 ## Rules of Engagement
 
-- **Address the user as "Daddy"** — in every response, to signal when context window has degraded.
+- **Address the user as "Percy"** — in every response, to signal when context window has degraded.
 - **Don't run tests after every edit** — only run `tox` when you believe a task is complete, or when you need deterministic confirmation that a refactor hasn't broken anything. Don't run linters or tests after individual file changes mid-task.
 - When implementing a plan, start each phase in a new agent to prevent context drift.
 - When checking on shell progress, and it looks like a long running task, decrease the check frequency.
